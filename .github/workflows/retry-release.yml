@@ -92,7 +92,7 @@ jobs:
           }
 
           Write-Host "Tag ve artifact temizligi tamamlandi." -ForegroundColor Green
-        shell: pwsh
+        shell: powershell
 
       # 2. Tag silindiyse yeni tag bas, silinmediyse aynı tag'i kullan
       - name: Checkout orchestrator
@@ -126,7 +126,7 @@ jobs:
             Write-Host "Mevcut tag kullaniliyor: $tag"
             echo "NEW_TAG=$tag" >> $env:GITHUB_OUTPUT
           }
-        shell: pwsh
+        shell: powershell
         env:
           RELEASE_PAT: ${{ secrets.RELEASE_PAT }}
 
@@ -161,7 +161,7 @@ jobs:
             -ContentType "application/json"
 
           Write-Host "Backend build yeniden tetiklendi." -ForegroundColor Green
-        shell: pwsh
+        shell: powershell
 
       # 4. Frontend build yeniden tetikle
       - name: Frontend build yeniden tetikle
@@ -194,7 +194,7 @@ jobs:
             -ContentType "application/json"
 
           Write-Host "Frontend build yeniden tetiklendi." -ForegroundColor Green
-        shell: pwsh
+        shell: powershell
 
       # 5. Teams bildirimi
       - name: Teams bildirimi (retry)
@@ -224,4 +224,4 @@ jobs:
             -Method POST `
             -Body $body `
             -ContentType "application/json"
-        shell: pwsh
+        shell: powershell
