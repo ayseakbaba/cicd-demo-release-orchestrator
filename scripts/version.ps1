@@ -1,86 +1,149 @@
 # version.ps1
-# Kullanim: .\version.ps1 -ReleaseType "normal" -VersionType "minor"
-# ReleaseType: normal | hotfix
-# VersionType: minor | major | patch (hotfix icin otomatik patch gelir)
+# Kullanim:
+# .\version.ps1 -ReleaseType "normal" -VersionType "minor"
 
 param(
-    [Parameter(Mandatory=$true)]
+    [Parameter(Mandatory = $true)]
     [ValidateSet("normal", "hotfix")]
     [string]$ReleaseType,
 
-    [Parameter(Mandatory=$false)]
+    [Parameter(Mandatory = $false)]
     [ValidateSet("minor", "major")]
     [string]$VersionType = "minor"
 )
 
-# GitHub API uzerinden mevcut tagleri cek
+$ErrorActionPreference = "Stop"
+
+if ([string]::IsNullOrWhiteSpace($env:RELEASE_PAT)) {
+    throw "RELEASE_PAT environment variable tanimli degil."
+}
+
+if ([string]::IsNullOrWhiteSpace($env:BACKEND_REPO)) {
+    throw "BACKEND_REPO repository variable tanimli degil."
+}
+
+if ([string]::IsNullOrWhiteSpace($env:FRONTEND_REPO)) {
+    throw "FRONTEND_REPO repository variable tanimli degil."
+}
+
 $headers = @{
     Authorization = "Bearer $env:RELEASE_PAT"
     Accept        = "application/vnd.github+json"
 }
 
-$owner = $env:GITHUB_REPOSITORY_OWNER
-$repo  = $env:GITHUB_REPOSITORY -replace ".*/", ""
+function Get-RepositoryTags {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Repository
+    )
 
-Write-Host "Tag listesi aliniyor... ($owner/$repo)"
+    $allTags = @()
+    $page = 1
 
-$tagsUrl = "https://api.github.com/repos/$owner/$repo/git/refs/tags"
+    do {
+        $tagsUrl = "https://api.github.com/repos/${Repository}/tags?per_page=100&page=$page"
 
-try {
-    $response = Invoke-RestMethod -Uri $tagsUrl -Headers $headers -Method GET
-} catch {
-    # 404 veya bos liste: hic tag yok, ilk release
-    $response = @()
+        Write-Host "Tag listesi aliniyor: $Repository - Sayfa: $page"
+
+        try {
+            $currentPageTags = @(
+                Invoke-RestMethod `
+                    -Uri $tagsUrl `
+                    -Headers $headers `
+                    -Method GET `
+                    -ErrorAction Stop
+            )
+        }
+        catch {
+            throw "Tag listesi alinamadi. Repository: $Repository. Hata: $($_.Exception.Message)"
+        }
+
+        $allTags += $currentPageTags
+        $page++
+
+    } while ($currentPageTags.Count -eq 100)
+
+    return $allTags
 }
 
-# Sadece release/* formatindaki tagleri filtrele
-$releaseTags = @()
+Write-Host "Backend repository : $env:BACKEND_REPO"
+Write-Host "Frontend repository: $env:FRONTEND_REPO"
 
-if ($response -and $response.Count -gt 0) {
-    $releaseTags = $response `
-        | Where-Object { $_.ref -match "^refs/tags/release/v(\d+)\.(\d+)(?:\.(\d+))?$" } `
-        | ForEach-Object {
-            $null = $_.ref -match "^refs/tags/release/v(\d+)\.(\d+)(?:\.(\d+))?$"
-            [PSCustomObject]@{
-                Raw   = $_.ref
-                Major = [int]$Matches[1]
-                Minor = [int]$Matches[2]
-                Patch = if ($Matches[3]) { [int]$Matches[3] } else { 0 }
+# Backend ve frontend taglerini birlikte oku.
+# Böylece frontend-only veya backend-only hotfix tagleri de hesaba katilir.
+$allTags = @()
+
+$allTags += Get-RepositoryTags -Repository $env:BACKEND_REPO
+$allTags += Get-RepositoryTags -Repository $env:FRONTEND_REPO
+
+$tagPattern = "^release/v(?<major>\d+)\.(?<minor>\d+)(?:\.(?<patch>\d+))?$"
+
+$releaseTags = @(
+    $allTags |
+        ForEach-Object {
+            $match = [regex]::Match($_.name, $tagPattern)
+
+            if ($match.Success) {
+                [PSCustomObject]@{
+                    Raw   = $_.name
+                    Major = [int]$match.Groups["major"].Value
+                    Minor = [int]$match.Groups["minor"].Value
+                    Patch = if ($match.Groups["patch"].Success) {
+                        [int]$match.Groups["patch"].Value
+                    }
+                    else {
+                        0
+                    }
+                }
             }
-        } `
-        | Sort-Object Major, Minor, Patch
-}
+        } |
+        Sort-Object Major, Minor, Patch
+)
 
 if ($releaseTags.Count -eq 0) {
-    # Hic tag yok, ilk release
     Write-Host "Hic release tag bulunamadi. Ilk release olusturuluyor."
+
     $newTag = "release/v1.0"
+
     Write-Host "Yeni tag: $newTag"
-    echo "NEW_TAG=$newTag" >> $env:GITHUB_OUTPUT
+
+    "NEW_TAG=$newTag" |
+        Out-File `
+            -FilePath $env:GITHUB_OUTPUT `
+            -Encoding utf8 `
+            -Append
+
     exit 0
 }
 
-# Son gecerli tagi al
 $latest = $releaseTags | Select-Object -Last 1
-Write-Host "Son gecerli tag: release/v$($latest.Major).$($latest.Minor)$(if($latest.Patch -gt 0){".$($latest.Patch)"})"
 
-# Yeni versiyonu hesapla
+Write-Host "Son gecerli tag: $($latest.Raw)"
+
 if ($ReleaseType -eq "hotfix") {
     $newMajor = $latest.Major
     $newMinor = $latest.Minor
-    $newPatch  = $latest.Patch + 1
-    $newTag    = "release/v$newMajor.$newMinor.$newPatch"
+    $newPatch = $latest.Patch + 1
+
+    $newTag = "release/v$newMajor.$newMinor.$newPatch"
 }
 elseif ($VersionType -eq "major") {
     $newMajor = $latest.Major + 1
     $newMinor = 0
-    $newTag   = "release/v$newMajor.$newMinor"
+
+    $newTag = "release/v$newMajor.$newMinor"
 }
 else {
     $newMajor = $latest.Major
     $newMinor = $latest.Minor + 1
-    $newTag   = "release/v$newMajor.$newMinor"
+
+    $newTag = "release/v$newMajor.$newMinor"
 }
 
 Write-Host "Yeni tag: $newTag"
-echo "NEW_TAG=$newTag" >> $env:GITHUB_OUTPUT
+
+"NEW_TAG=$newTag" |
+    Out-File `
+        -FilePath $env:GITHUB_OUTPUT `
+        -Encoding utf8 `
+        -Append
