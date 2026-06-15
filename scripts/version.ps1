@@ -42,7 +42,12 @@ function Get-RepositoryTags {
 
     do {
         $tagsUrl = "https://api.github.com/repos/${Repository}/tags?per_page=100&page=$page"
-
+        Write-Host "--------------------------------"
+        Write-Host "GitHub API istegi atiliyor"
+        Write-Host "Owner: $owner"
+        Write-Host "Repo: $repo"
+        Write-Host "Tags URL: $tagsUrl"
+        Write-Host "--------------------------------"
         Write-Host "Tag listesi aliniyor: $Repository - Sayfa: $page"
 
         try {
