@@ -1,1 +1,212 @@
+name: Release Start
 
+on:
+  workflow_dispatch:
+    inputs:
+      release_type:
+        description: "Release tipi"
+        required: true
+        type: choice
+        options:
+          - normal
+          - hotfix
+      version_type:
+        description: "Versiyon artis tipi (sadece normal release icin gecerli)"
+        required: false
+        type: choice
+        default: "minor"
+        options:
+          - minor
+          - major
+      affected_repos:
+        description: "Hotfix hangi repoyu etkiliyor? (sadece hotfix icin, normal release her ikisini de kapsar)"
+        required: false
+        type: choice
+        default: "both"
+        options:
+          - both
+          - backend
+          - frontend
+
+jobs:
+  start-release:
+    name: Versiyon hesapla ve tag bas
+    runs-on: self-hosted
+
+    outputs:
+      new_tag:       ${{ steps.version.outputs.NEW_TAG }}
+      release_type:  ${{ inputs.release_type }}
+      affected_repos: ${{ inputs.affected_repos }}
+
+    steps:
+      # 1. Orchestrator reposunu checkout et (version.ps1 icin)
+      - name: Checkout orchestrator
+        uses: actions/checkout@v4
+        with:
+          fetch-tags: true
+          token: ${{ secrets.RELEASE_PAT }}
+
+      # 2. Yeni versiyonu hesapla
+      - name: Versiyon hesapla
+        id: version
+        env:
+          RELEASE_PAT: ${{ secrets.RELEASE_PAT }}
+        run: |
+          .\scripts\version.ps1 `
+            -ReleaseType "${{ inputs.release_type }}" `
+            -VersionType "${{ inputs.version_type }}"
+        shell: pwsh
+
+      # 3. Hesaplanan tagi ekrana yaz (kontrol icin)
+      - name: Olusturulacak tag
+        run: |
+          Write-Host "Olusturulacak tag: ${{ steps.version.outputs.NEW_TAG }}"
+          Write-Host "Release tipi     : ${{ inputs.release_type }}"
+          Write-Host "Etkilenen repolar: ${{ inputs.affected_repos }}"
+        shell: pwsh
+
+      # 4. Backend reposuna tag bas
+      - name: Backend reposuna tag bas
+        if: inputs.affected_repos == 'both' || inputs.affected_repos == 'backend'
+        env:
+          RELEASE_PAT: ${{ secrets.RELEASE_PAT }}
+        run: |
+          $tag     = "${{ steps.version.outputs.NEW_TAG }}"
+          $headers = @{
+            Authorization = "Bearer $env:RELEASE_PAT"
+            Accept        = "application/vnd.github+json"
+          }
+
+          # Master branch'in son commit SHA'sini al
+          $branchUrl = "https://api.github.com/repos/${{ vars.BACKEND_REPO }}/git/refs/heads/master"
+          $branch    = Invoke-RestMethod -Uri $branchUrl -Headers $headers
+          $sha       = $branch.object.sha
+          Write-Host "Backend master SHA: $sha"
+
+          # Tag olustur
+          $body = @{ ref = "refs/tags/$tag"; sha = $sha } | ConvertTo-Json
+          Invoke-RestMethod `
+            -Uri "https://api.github.com/repos/${{ vars.BACKEND_REPO }}/git/refs" `
+            -Method POST `
+            -Headers $headers `
+            -Body $body `
+            -ContentType "application/json"
+
+          Write-Host "Backend tag basıldı: $tag"
+        shell: pwsh
+
+      # 5. Frontend reposuna tag bas
+      - name: Frontend reposuna tag bas
+        if: inputs.affected_repos == 'both' || inputs.affected_repos == 'frontend'
+        env:
+          RELEASE_PAT: ${{ secrets.RELEASE_PAT }}
+        run: |
+          $tag     = "${{ steps.version.outputs.NEW_TAG }}"
+          $headers = @{
+            Authorization = "Bearer $env:RELEASE_PAT"
+            Accept        = "application/vnd.github+json"
+          }
+
+          # Main branch'in son commit SHA'sini al
+          $branchUrl = "https://api.github.com/repos/${{ vars.FRONTEND_REPO }}/git/refs/heads/main"
+          $branch    = Invoke-RestMethod -Uri $branchUrl -Headers $headers
+          $sha       = $branch.object.sha
+          Write-Host "Frontend main SHA: $sha"
+
+          # Tag olustur
+          $body = @{ ref = "refs/tags/$tag"; sha = $sha } | ConvertTo-Json
+          Invoke-RestMethod `
+            -Uri "https://api.github.com/repos/${{ vars.FRONTEND_REPO }}/git/refs" `
+            -Method POST `
+            -Headers $headers `
+            -Body $body `
+            -ContentType "application/json"
+
+          Write-Host "Frontend tag basıldı: $tag"
+        shell: pwsh
+
+      # 6. Backend build workflow'unu tetikle
+      - name: Backend build tetikle
+        if: inputs.affected_repos == 'both' || inputs.affected_repos == 'backend'
+        env:
+          RELEASE_PAT: ${{ secrets.RELEASE_PAT }}
+        run: |
+          $body = @{
+            ref    = "master"
+            inputs = @{
+              tag          = "${{ steps.version.outputs.NEW_TAG }}"
+              release_type = "${{ inputs.release_type }}"
+            }
+          } | ConvertTo-Json
+
+          Invoke-RestMethod `
+            -Uri "https://api.github.com/repos/${{ vars.BACKEND_REPO }}/actions/workflows/build.yml/dispatches" `
+            -Method POST `
+            -Headers @{
+              Authorization = "Bearer $env:RELEASE_PAT"
+              Accept        = "application/vnd.github+json"
+            } `
+            -Body $body `
+            -ContentType "application/json"
+
+          Write-Host "Backend build tetiklendi."
+        shell: pwsh
+
+      # 7. Frontend build workflow'unu tetikle
+      - name: Frontend build tetikle
+        if: inputs.affected_repos == 'both' || inputs.affected_repos == 'frontend'
+        env:
+          RELEASE_PAT: ${{ secrets.RELEASE_PAT }}
+        run: |
+          $body = @{
+            ref    = "main"
+            inputs = @{
+              tag          = "${{ steps.version.outputs.NEW_TAG }}"
+              release_type = "${{ inputs.release_type }}"
+            }
+          } | ConvertTo-Json
+
+          Invoke-RestMethod `
+            -Uri "https://api.github.com/repos/${{ vars.FRONTEND_REPO }}/actions/workflows/build.yml/dispatches" `
+            -Method POST `
+            -Headers @{
+              Authorization = "Bearer $env:RELEASE_PAT"
+              Accept        = "application/vnd.github+json"
+            } `
+            -Body $body `
+            -ContentType "application/json"
+
+          Write-Host "Frontend build tetiklendi."
+        shell: pwsh
+
+      # 8. Hotfix: etkilenmeyen repo icin onceki artifact'i promote et
+      - name: Etkilenmeyen repo icin artifact promote bildirimi
+        if: inputs.release_type == 'hotfix' && inputs.affected_repos != 'both'
+        run: |
+          $skipped = if ("${{ inputs.affected_repos }}" -eq "backend") { "frontend" } else { "backend" }
+          Write-Host "$skipped reposu bu hotfix'ten etkilenmiyor."
+          Write-Host "Onceki basarili artifact otomatik promote edilecek."
+
+          # Orchestrator'a dogrudan success sinyali gonder (onceki artifact kullanilacak)
+          $body = @{
+            ref    = "main"
+            inputs = @{
+              tag          = "${{ steps.version.outputs.NEW_TAG }}"
+              repo         = $skipped
+              status       = "promote"
+              release_type = "hotfix"
+            }
+          } | ConvertTo-Json
+
+          Invoke-RestMethod `
+            -Uri "https://api.github.com/repos/${{ github.repository }}/actions/workflows/orchestrate-deploy.yml/dispatches" `
+            -Method POST `
+            -Headers @{
+              Authorization = "Bearer $env:RELEASE_PAT"
+              Accept        = "application/vnd.github+json"
+            } `
+            -Body $body `
+            -ContentType "application/json"
+        shell: pwsh
+        env:
+          RELEASE_PAT: ${{ secrets.RELEASE_PAT }}
