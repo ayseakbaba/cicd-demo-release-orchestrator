@@ -1,0 +1,332 @@
+name: Orchestrate Test Deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (örn: release/v1.4)"
+        required: true
+        type: string
+      release_type:
+        description: "Release tipi"
+        required: true
+        type: choice
+        options:
+          - normal
+          - hotfix
+
+jobs:
+  # ---------------------------------------------------------------
+  # JOB 1: Artifact'leri indir ve test ortamına deploy et
+  # ---------------------------------------------------------------
+  deploy-test:
+    name: Test ortamına deploy
+    runs-on: self-hosted
+
+    steps:
+      # 1. Changelog oluştur
+      - name: Checkout orchestrator (changelog için)
+        uses: actions/checkout@v4
+        with:
+          fetch-tags: true
+          token: ${{ secrets.RELEASE_PAT }}
+
+      - name: Changelog oluştur
+        env:
+          RELEASE_PAT: ${{ secrets.RELEASE_PAT }}
+        run: |
+          $tag     = "${{ inputs.tag }}"
+          $headers = @{
+            Authorization = "Bearer $env:RELEASE_PAT"
+            Accept        = "application/vnd.github+json"
+          }
+
+          # Bir önceki release tag'ini bul
+          $tagsUrl  = "https://api.github.com/repos/${{ github.repository }}/git/refs/tags"
+          $response = Invoke-RestMethod -Uri $tagsUrl -Headers $headers
+
+          $releaseTags = $response `
+            | Where-Object { $_.ref -match "^refs/tags/release/v(\d+)\.(\d+)(?:\.(\d+))?$" } `
+            | ForEach-Object {
+                $null = $_.ref -match "^refs/tags/release/v(\d+)\.(\d+)(?:\.(\d+))?$"
+                [PSCustomObject]@{
+                  Ref   = $_.ref -replace "refs/tags/", ""
+                  Major = [int]$Matches[1]
+                  Minor = [int]$Matches[2]
+                  Patch = if ($Matches[3]) { [int]$Matches[3] } else { 0 }
+                }
+              } `
+            | Sort-Object Major, Minor, Patch
+
+          $currentIndex = ($releaseTags | Select-Object -ExpandProperty Ref).IndexOf($tag)
+          $previousTag  = if ($currentIndex -gt 0) { $releaseTags[$currentIndex - 1].Ref } else { $null }
+
+          Write-Host "Mevcut tag : $tag"
+          Write-Host "Onceki tag : $previousTag"
+
+          # Her iki repodan commit'leri topla
+          $allChanges = @()
+          $date       = Get-Date -Format "yyyy-MM-dd HH:mm"
+
+          foreach ($repo in @("${{ vars.BACKEND_REPO }}", "${{ vars.FRONTEND_REPO }}")) {
+            $repoShort  = $repo -replace ".*/", ""
+            $commitsUrl = if ($previousTag) {
+              "https://api.github.com/repos/$repo/compare/$previousTag...$tag"
+            } else {
+              "https://api.github.com/repos/$repo/commits?sha=$tag&per_page=50"
+            }
+
+            try {
+              $result  = Invoke-RestMethod -Uri $commitsUrl -Headers $headers
+              $commits = if ($previousTag) { $result.commits } else { $result }
+
+              foreach ($commit in $commits) {
+                $msg = $commit.commit.message -split "`n" | Select-Object -First 1
+                $sha = $commit.sha.Substring(0, 7)
+                $allChanges += "- [$repoShort] $msg ($sha)"
+              }
+            } catch {
+              Write-Warning "$repo commit listesi alinamadi: $_"
+            }
+          }
+
+          # CHANGELOG.md güncelle
+          $changelogPath = "CHANGELOG.md"
+          $changeLines   = $allChanges -join [System.Environment]::NewLine
+          $newEntry      = "## $tag -- $date" + [System.Environment]::NewLine +
+                           $changeLines + [System.Environment]::NewLine +
+                           [System.Environment]::NewLine
+
+          if (Test-Path $changelogPath) {
+            $existing = Get-Content $changelogPath -Raw
+            ($newEntry + $existing) | Set-Content $changelogPath -Encoding UTF8
+          } else {
+            ("# Changelog" + [System.Environment]::NewLine + [System.Environment]::NewLine + $newEntry) |
+              Set-Content $changelogPath -Encoding UTF8
+          }
+
+          Write-Host "Changelog olusturuldu." -ForegroundColor Green
+
+          # Changelog'u commit et
+          git config user.email "github-actions@github.com"
+          git config user.name  "GitHub Actions"
+          git add CHANGELOG.md
+          git commit -m "chore: changelog guncellendi ($tag)"
+          git push
+        shell: pwsh
+
+      # 2. Backend artifact'ini indir (dev'de üretilmişti, rebuild yok)
+      - name: Backend artifact indir
+        uses: actions/download-artifact@v4
+        with:
+          name:         backend-${{ inputs.tag }}
+          path:         ${{ runner.temp }}\artifacts\backend
+          github-token: ${{ secrets.RELEASE_PAT }}
+          repository:   ${{ vars.BACKEND_REPO }}
+
+      # 3. Frontend artifact'ini indir
+      - name: Frontend artifact indir
+        uses: actions/download-artifact@v4
+        with:
+          name:         frontend-${{ inputs.tag }}
+          path:         ${{ runner.temp }}\artifacts\frontend
+          github-token: ${{ secrets.RELEASE_PAT }}
+          repository:   ${{ vars.FRONTEND_REPO }}
+
+      # 4. Test bekleme slotunu durdur
+      - name: IIS test bekleme slotu durdur
+        run: |
+          Import-Module WebAdministration
+          Stop-WebSite -Name "${{ vars.IIS_TEST_STAGING_SITE }}"    -ErrorAction SilentlyContinue
+          Stop-WebSite -Name "${{ vars.IIS_TEST_STAGING_API_SITE }}" -ErrorAction SilentlyContinue
+          Write-Host "Test bekleme slotu durduruldu."
+        shell: pwsh
+
+      # 5. Backend deploy → test bekleme slotu
+      - name: Backend deploy → test bekleme slotu
+        run: |
+          $src  = "${{ runner.temp }}\artifacts\backend"
+          $dest = "${{ vars.IIS_TEST_STAGING_BACKEND_PATH }}"
+
+          if (Test-Path $dest) {
+            Remove-Item "$dest\*" -Recurse -Force
+          }
+
+          Copy-Item "$src\*" -Destination $dest -Recurse -Force
+          Write-Host "Backend test bekleme slotuna deploy edildi."
+        shell: pwsh
+
+      # 6. Frontend deploy → test bekleme slotu
+      - name: Frontend deploy → test bekleme slotu
+        run: |
+          $src  = "${{ runner.temp }}\artifacts\frontend"
+          $dest = "${{ vars.IIS_TEST_STAGING_FRONTEND_PATH }}"
+
+          if (Test-Path $dest) {
+            Remove-Item "$dest\*" -Recurse -Force
+          }
+
+          Copy-Item "$src\*" -Destination $dest -Recurse -Force
+          Write-Host "Frontend test bekleme slotuna deploy edildi."
+        shell: pwsh
+
+      # 7. Test bekleme slotunu başlat
+      - name: IIS test bekleme slotu başlat
+        run: |
+          Import-Module WebAdministration
+          Start-WebSite -Name "${{ vars.IIS_TEST_STAGING_API_SITE }}"
+          Start-WebSite -Name "${{ vars.IIS_TEST_STAGING_SITE }}"
+          Write-Host "Test bekleme slotu baslatildi."
+        shell: pwsh
+
+      # 8. Health check (3 kez dene, 15sn arayla)
+      - name: Health check
+        id: healthcheck
+        run: |
+          $url     = "${{ vars.IIS_TEST_STAGING_HEALTH_URL }}"
+          $retries = 3
+          $wait    = 15
+          $success = $false
+
+          for ($i = 1; $i -le $retries; $i++) {
+            Write-Host "Health check denemesi $i/$retries → $url"
+            try {
+              $response = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 10
+              if ($response.StatusCode -eq 200) {
+                Write-Host "Health check basarili." -ForegroundColor Green
+                $success = $true
+                break
+              }
+            } catch {
+              Write-Host "Hata: $_"
+            }
+            if ($i -lt $retries) { Start-Sleep -Seconds $wait }
+          }
+
+          if (-not $success) {
+            echo "HEALTH=failed" >> $env:GITHUB_OUTPUT
+            exit 1
+          }
+
+          echo "HEALTH=ok" >> $env:GITHUB_OUTPUT
+        shell: pwsh
+
+      # 9. Health check başarısızsa rollback
+      - name: Rollback (health check başarısız)
+        if: failure() && steps.healthcheck.outputs.HEALTH == 'failed'
+        run: |
+          Import-Module WebAdministration
+          Stop-WebSite -Name "${{ vars.IIS_TEST_STAGING_SITE }}"     -ErrorAction SilentlyContinue
+          Stop-WebSite -Name "${{ vars.IIS_TEST_STAGING_API_SITE }}"  -ErrorAction SilentlyContinue
+
+          Remove-Item "${{ vars.IIS_TEST_STAGING_BACKEND_PATH }}\*"  -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item "${{ vars.IIS_TEST_STAGING_FRONTEND_PATH }}\*" -Recurse -Force -ErrorAction SilentlyContinue
+
+          Write-Host "Rollback tamamlandi. Test aktif slotu etkilenmedi." -ForegroundColor Yellow
+        shell: pwsh
+
+      # 10. Rollback Teams bildirimi
+      - name: Teams bildirimi (rollback)
+        if: failure()
+        run: |
+          $body = @{
+            type        = "message"
+            attachments = @(@{
+              contentType = "application/vnd.microsoft.card.adaptive"
+              content     = @{
+                type    = "AdaptiveCard"
+                version = "1.4"
+                body    = @(
+                  @{ type = "TextBlock"; text = "⚠️ Test Health Check Başarısız — Rollback Yapıldı"; weight = "Bolder"; size = "Medium" }
+                  @{ type = "TextBlock"; text = "Tag: ${{ inputs.tag }}" }
+                  @{ type = "TextBlock"; text = "Test aktif slotu etkilenmedi. Jira üzerinden retry yapabilirsiniz." }
+                )
+              }
+            })
+          } | ConvertTo-Json -Depth 10
+
+          Invoke-RestMethod `
+            -Uri "${{ secrets.TEAMS_WEBHOOK_URL }}" `
+            -Method POST `
+            -Body $body `
+            -ContentType "application/json"
+        shell: pwsh
+
+      # 11. Slot swap → test aktif
+      - name: Slot swap → Test aktif
+        run: |
+          Import-Module WebAdministration
+
+          Stop-WebSite -Name "${{ vars.IIS_TEST_ACTIVE_SITE }}"     -ErrorAction SilentlyContinue
+          Stop-WebSite -Name "${{ vars.IIS_TEST_ACTIVE_API_SITE }}"  -ErrorAction SilentlyContinue
+
+          $activeBE  = "${{ vars.IIS_TEST_ACTIVE_BACKEND_PATH }}"
+          $stagingBE = "${{ vars.IIS_TEST_STAGING_BACKEND_PATH }}"
+          $activeFE  = "${{ vars.IIS_TEST_ACTIVE_FRONTEND_PATH }}"
+          $stagingFE = "${{ vars.IIS_TEST_STAGING_FRONTEND_PATH }}"
+
+          # Backend swap
+          $tempBE = "$activeBE`_temp"
+          Rename-Item $activeBE  $tempBE
+          Rename-Item $stagingBE $activeBE
+          Rename-Item $tempBE    $stagingBE
+
+          # Frontend swap
+          $tempFE = "$activeFE`_temp"
+          Rename-Item $activeFE  $tempFE
+          Rename-Item $stagingFE $activeFE
+          Rename-Item $tempFE    $stagingFE
+
+          Start-WebSite -Name "${{ vars.IIS_TEST_ACTIVE_API_SITE }}"
+          Start-WebSite -Name "${{ vars.IIS_TEST_ACTIVE_SITE }}"
+
+          Write-Host "Test slot swap tamamlandi. Yeni versiyon test ortaminda aktif." -ForegroundColor Green
+        shell: pwsh
+
+      # 12. Jira → WAITING ACCEPTANCE + Teams bildirimi
+      - name: Jira ve Teams bildirimi (başarı)
+        run: |
+          # Jira geçişini orchestrate-jira workflow'u üzerinden yap
+          $body = @{
+            ref    = "main"
+            inputs = @{
+              tag           = "${{ inputs.tag }}"
+              transition_to = "WAITING ACCEPTANCE"
+              comment       = "Test ortamına deploy tamamlandı. Acceptance incelemesi bekleniyor."
+            }
+          } | ConvertTo-Json
+
+          Invoke-RestMethod `
+            -Uri "https://api.github.com/repos/${{ github.repository }}/actions/workflows/orchestrate-jira.yml/dispatches" `
+            -Method POST `
+            -Headers @{
+              Authorization = "Bearer ${{ secrets.RELEASE_PAT }}"
+              Accept        = "application/vnd.github+json"
+            } `
+            -Body $body `
+            -ContentType "application/json"
+
+          # Teams bildirimi
+          $teamsBody = @{
+            type        = "message"
+            attachments = @(@{
+              contentType = "application/vnd.microsoft.card.adaptive"
+              content     = @{
+                type    = "AdaptiveCard"
+                version = "1.4"
+                body    = @(
+                  @{ type = "TextBlock"; text = "✅ Test Deploy Tamamlandı"; weight = "Bolder"; size = "Medium" }
+                  @{ type = "TextBlock"; text = "Tag: ${{ inputs.tag }}" }
+                  @{ type = "TextBlock"; text = "Slot swap basarili. Test ortami aktif." }
+                  @{ type = "TextBlock"; text = "Jira'da ilgili isler WAITING ACCEPTANCE durumuna alindi." }
+                )
+              }
+            })
+          } | ConvertTo-Json -Depth 10
+
+          Invoke-RestMethod `
+            -Uri "${{ secrets.TEAMS_WEBHOOK_URL }}" `
+            -Method POST `
+            -Body $teamsBody `
+            -ContentType "application/json"
+        shell: pwsh
