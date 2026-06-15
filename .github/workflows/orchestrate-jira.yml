@@ -1,0 +1,252 @@
+name: Orchestrate Jira
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (örn: release/v1.4)"
+        required: true
+        type: string
+      transition_to:
+        description: "Geçilecek Jira durumu"
+        required: true
+        type: choice
+        options:
+          - WAITING QA
+          - WAITING TEST DEPLOY
+          - WAITING ACCEPTANCE
+          - DONE
+      comment:
+        description: "Jira issue'larına eklenecek yorum (opsiyonel)"
+        required: false
+        type: string
+
+jobs:
+  jira-transition:
+    name: Jira durum geçişi
+    runs-on: self-hosted
+
+    steps:
+      # 1. Her iki reponun commit geçmişinden issue key'leri topla
+      - name: Issue key'leri topla (backend)
+        id: backend-keys
+        env:
+          RELEASE_PAT: ${{ secrets.RELEASE_PAT }}
+        run: |
+          $headers = @{
+            Authorization = "Bearer $env:RELEASE_PAT"
+            Accept        = "application/vnd.github+json"
+          }
+
+          # Tag'e ait commit'leri al
+          $commitsUrl = "https://api.github.com/repos/${{ vars.BACKEND_REPO }}/commits?sha=${{ inputs.tag }}&per_page=50"
+          $commits    = Invoke-RestMethod -Uri $commitsUrl -Headers $headers
+
+          # Commit mesajlarından Jira issue key'lerini çek (örn: PROJ-123)
+          $pattern = "${{ vars.JIRA_PROJECT_KEY }}-\d+"
+          $keys    = @()
+
+          foreach ($commit in $commits) {
+            $msg     = $commit.commit.message
+            $matches = [regex]::Matches($msg, $pattern)
+            foreach ($m in $matches) {
+              if ($keys -notcontains $m.Value) {
+                $keys += $m.Value
+              }
+            }
+          }
+
+          $keyList = $keys -join ","
+          Write-Host "Backend issue key'leri: $keyList"
+          echo "BACKEND_KEYS=$keyList" >> $env:GITHUB_OUTPUT
+        shell: pwsh
+
+      - name: Issue key'leri topla (frontend)
+        id: frontend-keys
+        env:
+          RELEASE_PAT: ${{ secrets.RELEASE_PAT }}
+        run: |
+          $headers = @{
+            Authorization = "Bearer $env:RELEASE_PAT"
+            Accept        = "application/vnd.github+json"
+          }
+
+          $commitsUrl = "https://api.github.com/repos/${{ vars.FRONTEND_REPO }}/commits?sha=${{ inputs.tag }}&per_page=50"
+          $commits    = Invoke-RestMethod -Uri $commitsUrl -Headers $headers
+
+          $pattern = "${{ vars.JIRA_PROJECT_KEY }}-\d+"
+          $keys    = @()
+
+          foreach ($commit in $commits) {
+            $msg     = $commit.commit.message
+            $matches = [regex]::Matches($msg, $pattern)
+            foreach ($m in $matches) {
+              if ($keys -notcontains $m.Value) {
+                $keys += $m.Value
+              }
+            }
+          }
+
+          $keyList = $keys -join ","
+          Write-Host "Frontend issue key'leri: $keyList"
+          echo "FRONTEND_KEYS=$keyList" >> $env:GITHUB_OUTPUT
+        shell: pwsh
+
+      # 2. Key listelerini birleştir, tekrarları temizle
+      - name: Key listelerini birleştir
+        id: merge-keys
+        run: |
+          $backendKeys  = "${{ steps.backend-keys.outputs.BACKEND_KEYS }}" -split "," | Where-Object { $_ -ne "" }
+          $frontendKeys = "${{ steps.frontend-keys.outputs.FRONTEND_KEYS }}" -split "," | Where-Object { $_ -ne "" }
+          $allKeys      = ($backendKeys + $frontendKeys) | Sort-Object -Unique
+
+          if ($allKeys.Count -eq 0) {
+            Write-Error "Hicbir Jira issue key bulunamadi. Commit mesajlarinda '${{ vars.JIRA_PROJECT_KEY }}-XXXX' formati arandi."
+            exit 1
+          }
+
+          $keyList = $allKeys -join ","
+          Write-Host "Toplam issue key'ler: $keyList"
+          echo "ALL_KEYS=$keyList" >> $env:GITHUB_OUTPUT
+        shell: pwsh
+
+      # 3. Her issue için Jira durum geçişi yap
+      - name: Jira durum geçişi yap
+        run: |
+          $b64 = [Convert]::ToBase64String(
+            [Text.Encoding]::ASCII.GetBytes(
+              "${{ secrets.JIRA_USER_EMAIL }}:${{ secrets.JIRA_API_TOKEN }}"
+            )
+          )
+          $headers = @{
+            Authorization  = "Basic $b64"
+            "Content-Type" = "application/json"
+            Accept         = "application/json"
+          }
+
+          $targetStatus = "${{ inputs.transition_to }}"
+          $keys         = "${{ steps.merge-keys.outputs.ALL_KEYS }}" -split ","
+          $baseUrl      = "${{ secrets.JIRA_BASE_URL }}"
+          $failed       = @()
+
+          foreach ($key in $keys) {
+            $key = $key.Trim()
+            Write-Host "--- $key isleniyor ---"
+
+            try {
+              # Mevcut transition'lari al
+              $transUrl   = "$baseUrl/rest/api/3/issue/$key/transitions"
+              $transResp  = Invoke-RestMethod -Uri $transUrl -Headers $headers
+              $transition = $transResp.transitions | Where-Object { $_.name -eq $targetStatus }
+
+              if (-not $transition) {
+                Write-Warning "$key icin '$targetStatus' transition bulunamadi. Mevcut durumlar: $($transResp.transitions.name -join ', ')"
+                $failed += $key
+                continue
+              }
+
+              # Transition uygula
+              $body = @{ transition = @{ id = $transition.id } } | ConvertTo-Json
+              Invoke-RestMethod `
+                -Uri    "$transUrl" `
+                -Method POST `
+                -Headers $headers `
+                -Body   $body | Out-Null
+
+              Write-Host "$key → '$targetStatus' gecisi yapildi." -ForegroundColor Green
+
+            } catch {
+              Write-Warning "$key icin gecis basarisiz: $_"
+              $failed += $key
+            }
+          }
+
+          if ($failed.Count -gt 0) {
+            Write-Warning "Gecis yapilamayan issue'lar: $($failed -join ', ')"
+          }
+        shell: pwsh
+
+      # 4. Yorum ekle (girilmişse)
+      - name: Jira issue'larına yorum ekle
+        if: inputs.comment != ''
+        run: |
+          $b64 = [Convert]::ToBase64String(
+            [Text.Encoding]::ASCII.GetBytes(
+              "${{ secrets.JIRA_USER_EMAIL }}:${{ secrets.JIRA_API_TOKEN }}"
+            )
+          )
+          $headers = @{
+            Authorization  = "Basic $b64"
+            "Content-Type" = "application/json"
+          }
+
+          $keys    = "${{ steps.merge-keys.outputs.ALL_KEYS }}" -split ","
+          $baseUrl = "${{ secrets.JIRA_BASE_URL }}"
+          $tag     = "${{ inputs.tag }}"
+          $comment = "${{ inputs.comment }}"
+
+          foreach ($key in $keys) {
+            $key  = $key.Trim()
+            $body = @{
+              body = @{
+                type    = "doc"
+                version = 1
+                content = @(@{
+                  type    = "paragraph"
+                  content = @(@{
+                    type = "text"
+                    text = "[$tag] $comment"
+                  })
+                })
+              }
+            } | ConvertTo-Json -Depth 10
+
+            try {
+              Invoke-RestMethod `
+                -Uri    "$baseUrl/rest/api/3/issue/$key/comment" `
+                -Method POST `
+                -Headers $headers `
+                -Body   $body | Out-Null
+              Write-Host "$key icin yorum eklendi." -ForegroundColor Green
+            } catch {
+              Write-Warning "$key icin yorum eklenemedi: $_"
+            }
+          }
+        shell: pwsh
+
+      # 5. Teams bildirimi
+      - name: Teams bildirimi
+        run: |
+          $statusEmoji = switch ("${{ inputs.transition_to }}") {
+            "WAITING QA"           { "🔍" }
+            "WAITING TEST DEPLOY"  { "🚀" }
+            "WAITING ACCEPTANCE"   { "✅" }
+            "DONE"                 { "🎉" }
+            default                { "ℹ️" }
+          }
+
+          $keys = "${{ steps.merge-keys.outputs.ALL_KEYS }}"
+
+          $body = @{
+            type        = "message"
+            attachments = @(@{
+              contentType = "application/vnd.microsoft.card.adaptive"
+              content     = @{
+                type    = "AdaptiveCard"
+                version = "1.4"
+                body    = @(
+                  @{ type = "TextBlock"; text = "$statusEmoji Jira Durum Güncellendi"; weight = "Bolder"; size = "Medium" }
+                  @{ type = "TextBlock"; text = "Tag       : ${{ inputs.tag }}" }
+                  @{ type = "TextBlock"; text = "Yeni durum: ${{ inputs.transition_to }}" }
+                  @{ type = "TextBlock"; text = "Issue'lar : $keys" }
+                )
+              }
+            })
+          } | ConvertTo-Json -Depth 10
+
+          Invoke-RestMethod `
+            -Uri "${{ secrets.TEAMS_WEBHOOK_URL }}" `
+            -Method POST `
+            -Body $body `
+            -ContentType "application/json"
+        shell: pwsh
