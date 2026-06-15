@@ -1,1 +1,227 @@
+name: Retry Release
 
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Yeniden denenecek release tag (örn: release/v1.4)"
+        required: true
+        type: string
+      release_type:
+        description: "Release tipi"
+        required: true
+        type: choice
+        options:
+          - normal
+          - hotfix
+      affected_repos:
+        description: "Hangi repolar etkileniyor?"
+        required: false
+        type: choice
+        default: "both"
+        options:
+          - both
+          - backend
+          - frontend
+      delete_tag:
+        description: "Mevcut tag silinsin mi? (hayır = aynı tag ile yeniden dene)"
+        required: false
+        type: choice
+        default: "hayir"
+        options:
+          - hayir
+          - evet
+
+jobs:
+  retry:
+    name: Release yeniden tetikle
+    runs-on: self-hosted
+
+    steps:
+      # 1. Tag silme (isteğe bağlı)
+      - name: Tag sil (istenirse)
+        if: inputs.delete_tag == 'evet'
+        env:
+          RELEASE_PAT: ${{ secrets.RELEASE_PAT }}
+        run: |
+          $tag     = "${{ inputs.tag }}"
+          $headers = @{
+            Authorization = "Bearer $env:RELEASE_PAT"
+            Accept        = "application/vnd.github+json"
+          }
+
+          # Backend tag sil
+          try {
+            Invoke-RestMethod `
+              -Uri    "https://api.github.com/repos/${{ vars.BACKEND_REPO }}/git/refs/tags/$tag" `
+              -Method DELETE `
+              -Headers $headers
+            Write-Host "Backend tag silindi: $tag" -ForegroundColor Yellow
+          } catch {
+            Write-Warning "Backend tag silinemedi (zaten yok olabilir): $_"
+          }
+
+          # Frontend tag sil
+          try {
+            Invoke-RestMethod `
+              -Uri    "https://api.github.com/repos/${{ vars.FRONTEND_REPO }}/git/refs/tags/$tag" `
+              -Method DELETE `
+              -Headers $headers
+            Write-Host "Frontend tag silindi: $tag" -ForegroundColor Yellow
+          } catch {
+            Write-Warning "Frontend tag silinemedi (zaten yok olabilir): $_"
+          }
+
+          # Artifact'leri sil
+          Write-Host "Artifact'ler temizleniyor..."
+
+          foreach ($repo in @("${{ vars.BACKEND_REPO }}", "${{ vars.FRONTEND_REPO }}")) {
+            $artifactsUrl = "https://api.github.com/repos/$repo/actions/artifacts?name=$($tag -replace '/','-')"
+            try {
+              $artifacts = Invoke-RestMethod -Uri $artifactsUrl -Headers $headers
+              foreach ($artifact in $artifacts.artifacts) {
+                Invoke-RestMethod `
+                  -Uri    "https://api.github.com/repos/$repo/actions/artifacts/$($artifact.id)" `
+                  -Method DELETE `
+                  -Headers $headers | Out-Null
+                Write-Host "Artifact silindi: $($artifact.name)" -ForegroundColor Yellow
+              }
+            } catch {
+              Write-Warning "$repo artifact silinemedi: $_"
+            }
+          }
+
+          Write-Host "Tag ve artifact temizligi tamamlandi." -ForegroundColor Green
+        shell: pwsh
+
+      # 2. Tag silindiyse yeni tag bas, silinmediyse aynı tag'i kullan
+      - name: Checkout orchestrator
+        uses: actions/checkout@v4
+        with:
+          fetch-tags: true
+          token: ${{ secrets.RELEASE_PAT }}
+
+      - name: Tag durumunu belirle
+        id: tag-check
+        env:
+          RELEASE_PAT: ${{ secrets.RELEASE_PAT }}
+        run: |
+          $tag     = "${{ inputs.tag }}"
+          $deleted = "${{ inputs.delete_tag }}"
+          $headers = @{
+            Authorization = "Bearer $env:RELEASE_PAT"
+            Accept        = "application/vnd.github+json"
+          }
+
+          if ($deleted -eq "evet") {
+            # Tag silindi, yeni tag bas (aynı versiyon numarasıyla)
+            # Versiyonu yeniden hesapla
+            .\scripts\version.ps1 `
+              -ReleaseType "${{ inputs.release_type }}" `
+              -VersionType "minor"
+
+            Write-Host "Yeni tag olusturulacak."
+          } else {
+            # Aynı tag'i kullan, sadece build'i yeniden tetikle
+            Write-Host "Mevcut tag kullaniliyor: $tag"
+            echo "NEW_TAG=$tag" >> $env:GITHUB_OUTPUT
+          }
+        shell: pwsh
+        env:
+          RELEASE_PAT: ${{ secrets.RELEASE_PAT }}
+
+      # 3. Backend build yeniden tetikle
+      - name: Backend build yeniden tetikle
+        if: inputs.affected_repos == 'both' || inputs.affected_repos == 'backend'
+        env:
+          RELEASE_PAT: ${{ secrets.RELEASE_PAT }}
+        run: |
+          $tag = if ("${{ inputs.delete_tag }}" -eq "evet") {
+            "${{ steps.tag-check.outputs.NEW_TAG }}"
+          } else {
+            "${{ inputs.tag }}"
+          }
+
+          $body = @{
+            ref    = "master"
+            inputs = @{
+              tag          = $tag
+              release_type = "${{ inputs.release_type }}"
+            }
+          } | ConvertTo-Json
+
+          Invoke-RestMethod `
+            -Uri "https://api.github.com/repos/${{ vars.BACKEND_REPO }}/actions/workflows/build.yml/dispatches" `
+            -Method POST `
+            -Headers @{
+              Authorization = "Bearer $env:RELEASE_PAT"
+              Accept        = "application/vnd.github+json"
+            } `
+            -Body $body `
+            -ContentType "application/json"
+
+          Write-Host "Backend build yeniden tetiklendi." -ForegroundColor Green
+        shell: pwsh
+
+      # 4. Frontend build yeniden tetikle
+      - name: Frontend build yeniden tetikle
+        if: inputs.affected_repos == 'both' || inputs.affected_repos == 'frontend'
+        env:
+          RELEASE_PAT: ${{ secrets.RELEASE_PAT }}
+        run: |
+          $tag = if ("${{ inputs.delete_tag }}" -eq "evet") {
+            "${{ steps.tag-check.outputs.NEW_TAG }}"
+          } else {
+            "${{ inputs.tag }}"
+          }
+
+          $body = @{
+            ref    = "main"
+            inputs = @{
+              tag          = $tag
+              release_type = "${{ inputs.release_type }}"
+            }
+          } | ConvertTo-Json
+
+          Invoke-RestMethod `
+            -Uri "https://api.github.com/repos/${{ vars.FRONTEND_REPO }}/actions/workflows/build.yml/dispatches" `
+            -Method POST `
+            -Headers @{
+              Authorization = "Bearer $env:RELEASE_PAT"
+              Accept        = "application/vnd.github+json"
+            } `
+            -Body $body `
+            -ContentType "application/json"
+
+          Write-Host "Frontend build yeniden tetiklendi." -ForegroundColor Green
+        shell: pwsh
+
+      # 5. Teams bildirimi
+      - name: Teams bildirimi (retry)
+        run: |
+          $tag = "${{ inputs.tag }}"
+
+          $body = @{
+            type        = "message"
+            attachments = @(@{
+              contentType = "application/vnd.microsoft.card.adaptive"
+              content     = @{
+                type    = "AdaptiveCard"
+                version = "1.4"
+                body    = @(
+                  @{ type = "TextBlock"; text = "🔄 Release Yeniden Tetiklendi"; weight = "Bolder"; size = "Medium" }
+                  @{ type = "TextBlock"; text = "Tag         : $tag" }
+                  @{ type = "TextBlock"; text = "Release tipi: ${{ inputs.release_type }}" }
+                  @{ type = "TextBlock"; text = "Etkilenen   : ${{ inputs.affected_repos }}" }
+                  @{ type = "TextBlock"; text = "Tag silindi : ${{ inputs.delete_tag }}" }
+                )
+              }
+            })
+          } | ConvertTo-Json -Depth 10
+
+          Invoke-RestMethod `
+            -Uri "${{ secrets.TEAMS_WEBHOOK_URL }}" `
+            -Method POST `
+            -Body $body `
+            -ContentType "application/json"
+        shell: pwsh
