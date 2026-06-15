@@ -51,8 +51,14 @@ jobs:
         id: version
         env:
           RELEASE_PAT: ${{ secrets.RELEASE_PAT }}
+          BACKEND_REPO: ${{ vars.BACKEND_REPO }}
+          FRONTEND_REPO: ${{ vars.FRONTEND_REPO }}
         run: |
           $scriptPath = Join-Path $env:GITHUB_WORKSPACE "scripts\version.ps1"
+      
+          Write-Host "Backend repo : $env:BACKEND_REPO"
+          Write-Host "Frontend repo: $env:FRONTEND_REPO"
+      
           & $scriptPath `
             -ReleaseType "${{ inputs.release_type }}" `
             -VersionType "${{ inputs.version_type }}"
