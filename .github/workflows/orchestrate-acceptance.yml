@@ -1,0 +1,239 @@
+name: Orchestrate Acceptance
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (örn: release/v1.4)"
+        required: true
+        type: string
+      decision:
+        description: "Acceptance kararı"
+        required: true
+        type: choice
+        options:
+          - approved
+          - rejected
+      rejection_reason:
+        description: "Red sebebi (sadece rejected seçilirse gerekli)"
+        required: false
+        type: string
+
+jobs:
+  # ---------------------------------------------------------------
+  # JOB 1: Onay kararına göre süreci tamamla veya reddet
+  # ---------------------------------------------------------------
+  acceptance:
+    name: Acceptance değerlendirme
+    runs-on: self-hosted
+
+    steps:
+      # ── ONAYLANDI ──────────────────────────────────────────────
+
+      # 1. Jira → DONE geçişi
+      - name: Jira → DONE
+        if: inputs.decision == 'approved'
+        run: |
+          $body = @{
+            ref    = "main"
+            inputs = @{
+              tag           = "${{ inputs.tag }}"
+              transition_to = "DONE"
+              comment       = "Acceptance onaylandi. Release tamamlandi. Tag: ${{ inputs.tag }}"
+            }
+          } | ConvertTo-Json
+
+          Invoke-RestMethod `
+            -Uri "https://api.github.com/repos/${{ github.repository }}/actions/workflows/orchestrate-jira.yml/dispatches" `
+            -Method POST `
+            -Headers @{
+              Authorization = "Bearer ${{ secrets.RELEASE_PAT }}"
+              Accept        = "application/vnd.github+json"
+            } `
+            -Body $body `
+            -ContentType "application/json"
+
+          Write-Host "Jira DONE gecisi tetiklendi." -ForegroundColor Green
+        shell: pwsh
+
+      # 2. GitHub Release oluştur (tag altında release notu)
+      - name: GitHub Release oluştur
+        if: inputs.decision == 'approved'
+        env:
+          RELEASE_PAT: ${{ secrets.RELEASE_PAT }}
+        run: |
+          $tag     = "${{ inputs.tag }}"
+          $headers = @{
+            Authorization = "Bearer $env:RELEASE_PAT"
+            Accept        = "application/vnd.github+json"
+          }
+
+          # CHANGELOG.md'den bu tag'e ait bölümü oku
+          $changelogPath = "CHANGELOG.md"
+          $releaseNotes  = "Release $tag tamamlandi."
+
+          if (Test-Path $changelogPath) {
+            $content = Get-Content $changelogPath -Raw
+            # Bu tag'e ait satırları çek
+            $pattern = "(?s)## $([regex]::Escape($tag)).*?(?=## |$)"
+            $match   = [regex]::Match($content, $pattern)
+            if ($match.Success) {
+              $releaseNotes = $match.Value.Trim()
+            }
+          }
+
+          # Her iki repoda GitHub Release oluştur
+          foreach ($repo in @("${{ vars.BACKEND_REPO }}", "${{ vars.FRONTEND_REPO }}")) {
+            $body = @{
+              tag_name = $tag
+              name     = $tag
+              body     = $releaseNotes
+              draft    = $false
+              prerelease = $false
+            } | ConvertTo-Json
+
+            try {
+              Invoke-RestMethod `
+                -Uri    "https://api.github.com/repos/$repo/releases" `
+                -Method POST `
+                -Headers $headers `
+                -Body $body `
+                -ContentType "application/json" | Out-Null
+              Write-Host "$repo icin GitHub Release olusturuldu: $tag" -ForegroundColor Green
+            } catch {
+              Write-Warning "$repo GitHub Release olusturulamadi: $_"
+            }
+          }
+        shell: pwsh
+
+      # 3. Artifact temizliği (90 günden önce manuel temizlik istenirse)
+      - name: Eski artifact'leri temizle (opsiyonel)
+        if: inputs.decision == 'approved'
+        env:
+          RELEASE_PAT: ${{ secrets.RELEASE_PAT }}
+        run: |
+          $tag     = "${{ inputs.tag }}"
+          $headers = @{
+            Authorization = "Bearer $env:RELEASE_PAT"
+            Accept        = "application/vnd.github+json"
+          }
+
+          # Sadece bu release'e ait geçici artifact'leri temizle
+          # (build artifact'leri değil, state dosyaları varsa)
+          $stateDir = "$env:RUNNER_TEMP\release-state\$($tag -replace '/', '_')"
+          if (Test-Path $stateDir) {
+            Remove-Item -Recurse -Force $stateDir
+            Write-Host "State dosyalari temizlendi." -ForegroundColor Green
+          }
+
+          Write-Host "Artifact temizligi tamamlandi." -ForegroundColor Green
+        shell: pwsh
+
+      # 4. Teams bildirimi (onay)
+      - name: Teams bildirimi (onay)
+        if: inputs.decision == 'approved'
+        run: |
+          $tag = "${{ inputs.tag }}"
+
+          $body = @{
+            type        = "message"
+            attachments = @(@{
+              contentType = "application/vnd.microsoft.card.adaptive"
+              content     = @{
+                type    = "AdaptiveCard"
+                version = "1.4"
+                body    = @(
+                  @{
+                    type   = "ColumnSet"
+                    columns = @(
+                      @{
+                        type  = "Column"
+                        width = "auto"
+                        items = @(@{ type = "TextBlock"; text = "🎉"; size = "ExtraLarge" })
+                      }
+                      @{
+                        type  = "Column"
+                        width = "stretch"
+                        items = @(
+                          @{ type = "TextBlock"; text = "Release Tamamlandı"; weight = "Bolder"; size = "Large" }
+                          @{ type = "TextBlock"; text = "Tag: $tag"; isSubtle = $true }
+                        )
+                      }
+                    )
+                  }
+                  @{ type = "TextBlock"; text = "Acceptance onaylandi. Jira'da tum isler DONE durumuna alindi." }
+                  @{ type = "TextBlock"; text = "GitHub Release notu olusturuldu."; isSubtle = $true }
+                )
+              }
+            })
+          } | ConvertTo-Json -Depth 15
+
+          Invoke-RestMethod `
+            -Uri "${{ secrets.TEAMS_WEBHOOK_URL }}" `
+            -Method POST `
+            -Body $body `
+            -ContentType "application/json"
+        shell: pwsh
+
+      # ── REDDEDİLDİ ─────────────────────────────────────────────
+
+      # 5. Red durumunda Jira'ya yorum ekle
+      - name: Jira'ya red yorumu ekle
+        if: inputs.decision == 'rejected'
+        run: |
+          $reason = "${{ inputs.rejection_reason }}"
+          if (-not $reason) { $reason = "Sebep belirtilmedi." }
+
+          $body = @{
+            ref    = "main"
+            inputs = @{
+              tag           = "${{ inputs.tag }}"
+              transition_to = "WAITING ACCEPTANCE"
+              comment       = "Acceptance reddedildi. Sebep: $reason"
+            }
+          } | ConvertTo-Json
+
+          Invoke-RestMethod `
+            -Uri "https://api.github.com/repos/${{ github.repository }}/actions/workflows/orchestrate-jira.yml/dispatches" `
+            -Method POST `
+            -Headers @{
+              Authorization = "Bearer ${{ secrets.RELEASE_PAT }}"
+              Accept        = "application/vnd.github+json"
+            } `
+            -Body $body `
+            -ContentType "application/json"
+
+          Write-Host "Red yorumu Jira'ya eklendi." -ForegroundColor Yellow
+        shell: pwsh
+
+      # 6. Teams bildirimi (red)
+      - name: Teams bildirimi (red)
+        if: inputs.decision == 'rejected'
+        run: |
+          $tag    = "${{ inputs.tag }}"
+          $reason = "${{ inputs.rejection_reason }}"
+          if (-not $reason) { $reason = "Sebep belirtilmedi." }
+
+          $body = @{
+            type        = "message"
+            attachments = @(@{
+              contentType = "application/vnd.microsoft.card.adaptive"
+              content     = @{
+                type    = "AdaptiveCard"
+                version = "1.4"
+                body    = @(
+                  @{ type = "TextBlock"; text = "❌ Acceptance Reddedildi"; weight = "Bolder"; size = "Medium"; color = "Attention" }
+                  @{ type = "TextBlock"; text = "Tag   : $tag" }
+                  @{ type = "TextBlock"; text = "Sebep : $reason" }
+                  @{ type = "TextBlock"; text = "Jira'da ilgili isler WAITING ACCEPTANCE durumunda kaldi. Duzeltme yapilip tekrar onaya sunulabilir." }
+                )
+              }
+            })
+          } | ConvertTo-Json -Depth 10
+
+          Invoke-RestMethod `
+            -Uri "${{ secrets.TEAMS_WEBHOOK_URL }}" `
+            -Method POST `
+            -Body $body `
+            -ContentType "application/json"
+        shell: pwsh
