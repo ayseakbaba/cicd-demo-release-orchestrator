@@ -34,8 +34,8 @@ jobs:
     runs-on: self-hosted
 
     outputs:
-      new_tag:       ${{ steps.version.outputs.NEW_TAG }}
-      release_type:  ${{ inputs.release_type }}
+      new_tag:        ${{ steps.version.outputs.NEW_TAG }}
+      release_type:   ${{ inputs.release_type }}
       affected_repos: ${{ inputs.affected_repos }}
 
     steps:
@@ -52,7 +52,8 @@ jobs:
         env:
           RELEASE_PAT: ${{ secrets.RELEASE_PAT }}
         run: |
-          .\scripts\version.ps1 `
+          $scriptPath = Join-Path $env:GITHUB_WORKSPACE "scripts\version.ps1"
+          & $scriptPath `
             -ReleaseType "${{ inputs.release_type }}" `
             -VersionType "${{ inputs.version_type }}"
         shell: powershell
@@ -77,13 +78,11 @@ jobs:
             Accept        = "application/vnd.github+json"
           }
 
-          # Master branch'in son commit SHA'sini al
           $branchUrl = "https://api.github.com/repos/${{ vars.BACKEND_REPO }}/git/refs/heads/master"
           $branch    = Invoke-RestMethod -Uri $branchUrl -Headers $headers
           $sha       = $branch.object.sha
           Write-Host "Backend master SHA: $sha"
 
-          # Tag olustur
           $body = @{ ref = "refs/tags/$tag"; sha = $sha } | ConvertTo-Json
           Invoke-RestMethod `
             -Uri "https://api.github.com/repos/${{ vars.BACKEND_REPO }}/git/refs" `
@@ -92,7 +91,7 @@ jobs:
             -Body $body `
             -ContentType "application/json"
 
-          Write-Host "Backend tag basıldı: $tag"
+          Write-Host "Backend tag basildi: $tag"
         shell: powershell
 
       # 5. Frontend reposuna tag bas
@@ -107,13 +106,11 @@ jobs:
             Accept        = "application/vnd.github+json"
           }
 
-          # Main branch'in son commit SHA'sini al
           $branchUrl = "https://api.github.com/repos/${{ vars.FRONTEND_REPO }}/git/refs/heads/main"
           $branch    = Invoke-RestMethod -Uri $branchUrl -Headers $headers
           $sha       = $branch.object.sha
           Write-Host "Frontend main SHA: $sha"
 
-          # Tag olustur
           $body = @{ ref = "refs/tags/$tag"; sha = $sha } | ConvertTo-Json
           Invoke-RestMethod `
             -Uri "https://api.github.com/repos/${{ vars.FRONTEND_REPO }}/git/refs" `
@@ -122,7 +119,7 @@ jobs:
             -Body $body `
             -ContentType "application/json"
 
-          Write-Host "Frontend tag basıldı: $tag"
+          Write-Host "Frontend tag basildi: $tag"
         shell: powershell
 
       # 6. Backend build workflow'unu tetikle
@@ -182,12 +179,13 @@ jobs:
       # 8. Hotfix: etkilenmeyen repo icin onceki artifact'i promote et
       - name: Etkilenmeyen repo icin artifact promote bildirimi
         if: inputs.release_type == 'hotfix' && inputs.affected_repos != 'both'
+        env:
+          RELEASE_PAT: ${{ secrets.RELEASE_PAT }}
         run: |
           $skipped = if ("${{ inputs.affected_repos }}" -eq "backend") { "frontend" } else { "backend" }
           Write-Host "$skipped reposu bu hotfix'ten etkilenmiyor."
           Write-Host "Onceki basarili artifact otomatik promote edilecek."
 
-          # Orchestrator'a dogrudan success sinyali gonder (onceki artifact kullanilacak)
           $body = @{
             ref    = "main"
             inputs = @{
@@ -208,5 +206,3 @@ jobs:
             -Body $body `
             -ContentType "application/json"
         shell: powershell
-        env:
-          RELEASE_PAT: ${{ secrets.RELEASE_PAT }}
