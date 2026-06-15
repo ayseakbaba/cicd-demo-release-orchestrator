@@ -59,7 +59,7 @@ jobs:
           $keyList = $keys -join ","
           Write-Host "Backend issue key'leri: $keyList"
           echo "BACKEND_KEYS=$keyList" >> $env:GITHUB_OUTPUT
-        shell: pwsh
+        shell: powershell
 
       - name: Issue key'leri topla (frontend)
         id: frontend-keys
@@ -90,7 +90,7 @@ jobs:
           $keyList = $keys -join ","
           Write-Host "Frontend issue key'leri: $keyList"
           echo "FRONTEND_KEYS=$keyList" >> $env:GITHUB_OUTPUT
-        shell: pwsh
+        shell: powershell
 
       # 2. Key listelerini birleştir, tekrarları temizle
       - name: Key listelerini birleştir
@@ -108,7 +108,7 @@ jobs:
           $keyList = $allKeys -join ","
           Write-Host "Toplam issue key'ler: $keyList"
           echo "ALL_KEYS=$keyList" >> $env:GITHUB_OUTPUT
-        shell: pwsh
+        shell: powershell
 
       # 3. Her issue için Jira durum geçişi yap
       - name: Jira durum geçişi yap
@@ -164,7 +164,7 @@ jobs:
           if ($failed.Count -gt 0) {
             Write-Warning "Gecis yapilamayan issue'lar: $($failed -join ', ')"
           }
-        shell: pwsh
+        shell: powershell
 
       # 4. Yorum ekle (girilmişse)
       - name: Jira issue'larına yorum ekle
@@ -212,7 +212,7 @@ jobs:
               Write-Warning "$key icin yorum eklenemedi: $_"
             }
           }
-        shell: pwsh
+        shell: powershell
 
       # 5. Teams bildirimi
       - name: Teams bildirimi
@@ -249,4 +249,4 @@ jobs:
             -Method POST `
             -Body $body `
             -ContentType "application/json"
-        shell: pwsh
+        shell: powershell

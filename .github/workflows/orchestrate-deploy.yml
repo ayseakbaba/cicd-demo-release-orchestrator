@@ -60,7 +60,7 @@ jobs:
           # repo bazinda sonucu dosyaya yaz
           $status | Out-File -FilePath "$cacheDir\$repo.txt" -Encoding utf8
           Write-Host "$repo sonucu kaydedildi: $status"
-        shell: pwsh
+        shell: powershell
 
       # 2. Her iki repo sonucu geldiyse gate'i ac
       - name: Gate kontrolü
@@ -94,7 +94,7 @@ jobs:
             Write-Host "Frontend hazir : $frontendReady"
             echo "READY=false" >> $env:GITHUB_OUTPUT
           }
-        shell: pwsh
+        shell: powershell
 
   # ---------------------------------------------------------------
   # JOB 2: Build hatasi varsa bildir ve dur
@@ -113,7 +113,7 @@ jobs:
           if (Test-Path $cacheDir) {
             Remove-Item -Recurse -Force $cacheDir
           }
-        shell: pwsh
+        shell: powershell
 
       - name: Teams bildirimi gonder (hata)
         run: |
@@ -148,7 +148,7 @@ jobs:
             -Method POST `
             -Body $body `
             -ContentType "application/json"
-        shell: pwsh
+        shell: powershell
 
   # ---------------------------------------------------------------
   # JOB 3: Her iki build basariliysa deploy et
@@ -184,7 +184,7 @@ jobs:
           Import-Module WebAdministration
           Stop-WebSite -Name "${{ vars.IIS_DEV_STAGING_SITE }}"
           Write-Host "Bekleme slotu durduruldu: ${{ vars.IIS_DEV_STAGING_SITE }}"
-        shell: pwsh
+        shell: powershell
 
       # 4. Backend deploy (bekleme slotuna)
       - name: Backend deploy → bekleme slotu
@@ -199,7 +199,7 @@ jobs:
 
           Copy-Item "$src\*" -Destination $dest -Recurse -Force
           Write-Host "Backend bekleme slotuna deploy edildi."
-        shell: pwsh
+        shell: powershell
 
       # 5. Frontend deploy (bekleme slotuna)
       - name: Frontend deploy → bekleme slotu
@@ -213,7 +213,7 @@ jobs:
 
           Copy-Item "$src\*" -Destination $dest -Recurse -Force
           Write-Host "Frontend bekleme slotuna deploy edildi."
-        shell: pwsh
+        shell: powershell
 
       # 6. IIS bekleme slotunu baslat
       - name: IIS bekleme slotu baslat
@@ -221,7 +221,7 @@ jobs:
           Import-Module WebAdministration
           Start-WebSite -Name "${{ vars.IIS_DEV_STAGING_SITE }}"
           Write-Host "Bekleme slotu baslatildi."
-        shell: pwsh
+        shell: powershell
 
       # 7. Health check (3 kez dene, 15sn arayla)
       - name: Health check
@@ -254,7 +254,7 @@ jobs:
           }
 
           echo "HEALTH=ok" >> $env:GITHUB_OUTPUT
-        shell: pwsh
+        shell: powershell
 
       # 8. Health check basarisizsa rollback
       - name: Rollback (health check basarisiz)
@@ -268,7 +268,7 @@ jobs:
           Remove-Item "${{ vars.IIS_DEV_STAGING_FRONTEND_PATH }}\*" -Recurse -Force -ErrorAction SilentlyContinue
 
           Write-Host "Rollback tamamlandi. Aktif slot etkilenmedi."
-        shell: pwsh
+        shell: powershell
 
       # 9. Rollback sonrasi Teams bildirimi
       - name: Teams bildirimi (rollback)
@@ -295,7 +295,7 @@ jobs:
             -Method POST `
             -Body $body `
             -ContentType "application/json"
-        shell: pwsh
+        shell: powershell
 
       # 10. Slot swap (health check OK)
       - name: Slot swap → Dev aktif
@@ -326,7 +326,7 @@ jobs:
           # Aktif slotu baslat
           Start-WebSite -Name "${{ vars.IIS_DEV_ACTIVE_SITE }}"
           Write-Host "Slot swap tamamlandi. Yeni versiyon aktif."
-        shell: pwsh
+        shell: powershell
 
       # 11. State dosyalarini temizle
       - name: State dosyalarini temizle
@@ -337,7 +337,7 @@ jobs:
           if (Test-Path $cacheDir) {
             Remove-Item -Recurse -Force $cacheDir
           }
-        shell: pwsh
+        shell: powershell
 
       # 12. Jira ve Teams bildirimi (basari)
       - name: Jira Waiting QA + Teams bildirimi
@@ -372,4 +372,4 @@ jobs:
           # Jira REST API uzerinden transition yapilacak.
           # Bu adim orchestrate-jira.yml'de ayri yonetilecek.
           Write-Host "Jira gecisi orchestrate-jira workflow'u tarafindan yapilacak."
-        shell: pwsh
+        shell: powershell

@@ -55,7 +55,7 @@ jobs:
           .\scripts\version.ps1 `
             -ReleaseType "${{ inputs.release_type }}" `
             -VersionType "${{ inputs.version_type }}"
-        shell: pwsh
+        shell: powershell
 
       # 3. Hesaplanan tagi ekrana yaz (kontrol icin)
       - name: Olusturulacak tag
@@ -63,7 +63,7 @@ jobs:
           Write-Host "Olusturulacak tag: ${{ steps.version.outputs.NEW_TAG }}"
           Write-Host "Release tipi     : ${{ inputs.release_type }}"
           Write-Host "Etkilenen repolar: ${{ inputs.affected_repos }}"
-        shell: pwsh
+        shell: powershell
 
       # 4. Backend reposuna tag bas
       - name: Backend reposuna tag bas
@@ -93,7 +93,7 @@ jobs:
             -ContentType "application/json"
 
           Write-Host "Backend tag basıldı: $tag"
-        shell: pwsh
+        shell: powershell
 
       # 5. Frontend reposuna tag bas
       - name: Frontend reposuna tag bas
@@ -123,7 +123,7 @@ jobs:
             -ContentType "application/json"
 
           Write-Host "Frontend tag basıldı: $tag"
-        shell: pwsh
+        shell: powershell
 
       # 6. Backend build workflow'unu tetikle
       - name: Backend build tetikle
@@ -150,7 +150,7 @@ jobs:
             -ContentType "application/json"
 
           Write-Host "Backend build tetiklendi."
-        shell: pwsh
+        shell: powershell
 
       # 7. Frontend build workflow'unu tetikle
       - name: Frontend build tetikle
@@ -177,7 +177,7 @@ jobs:
             -ContentType "application/json"
 
           Write-Host "Frontend build tetiklendi."
-        shell: pwsh
+        shell: powershell
 
       # 8. Hotfix: etkilenmeyen repo icin onceki artifact'i promote et
       - name: Etkilenmeyen repo icin artifact promote bildirimi
@@ -207,6 +207,6 @@ jobs:
             } `
             -Body $body `
             -ContentType "application/json"
-        shell: pwsh
+        shell: powershell
         env:
           RELEASE_PAT: ${{ secrets.RELEASE_PAT }}

@@ -54,7 +54,7 @@ jobs:
             -ContentType "application/json"
 
           Write-Host "Jira DONE gecisi tetiklendi." -ForegroundColor Green
-        shell: pwsh
+        shell: powershell
 
       # 2. GitHub Release oluştur (tag altında release notu)
       - name: GitHub Release oluştur
@@ -104,7 +104,7 @@ jobs:
               Write-Warning "$repo GitHub Release olusturulamadi: $_"
             }
           }
-        shell: pwsh
+        shell: powershell
 
       # 3. Artifact temizliği (90 günden önce manuel temizlik istenirse)
       - name: Eski artifact'leri temizle (opsiyonel)
@@ -127,7 +127,7 @@ jobs:
           }
 
           Write-Host "Artifact temizligi tamamlandi." -ForegroundColor Green
-        shell: pwsh
+        shell: powershell
 
       # 4. Teams bildirimi (onay)
       - name: Teams bildirimi (onay)
@@ -173,7 +173,7 @@ jobs:
             -Method POST `
             -Body $body `
             -ContentType "application/json"
-        shell: pwsh
+        shell: powershell
 
       # ── REDDEDİLDİ ─────────────────────────────────────────────
 
@@ -204,7 +204,7 @@ jobs:
             -ContentType "application/json"
 
           Write-Host "Red yorumu Jira'ya eklendi." -ForegroundColor Yellow
-        shell: pwsh
+        shell: powershell
 
       # 6. Teams bildirimi (red)
       - name: Teams bildirimi (red)
@@ -236,4 +236,4 @@ jobs:
             -Method POST `
             -Body $body `
             -ContentType "application/json"
-        shell: pwsh
+        shell: powershell
