@@ -192,7 +192,7 @@ jobs:
       - name: Backend deploy
         run: |
           $safeTag = "${{ inputs.tag }}" -replace "/", "-"
-          $src     = "C:\actions-runner\artifacts\backend-$safeTag"
+          $src     = "C:\actions-runner\artifacts\backend\backend-$safeTag"
           $dest    = "${{ vars.IIS_DEV_STAGING_BACKEND_PATH }}"
 
           Write-Host "Kaynak : $src"
@@ -214,7 +214,7 @@ jobs:
       - name: Frontend deploy
         run: |
           $safeTag = "${{ inputs.tag }}" -replace "/", "-"
-          $src     = "C:\actions-runner\artifacts\frontend-$safeTag"
+          $src     = "C:\actions-runner\artifacts\frontend\frontend-$safeTag"
           $dest    = "${{ vars.IIS_DEV_STAGING_FRONTEND_PATH }}"
 
           Write-Host "Kaynak : $src"
@@ -318,30 +318,14 @@ jobs:
       # 10. Slot swap
       - name: Slot swap - Dev aktif
         run: |
-          Import-Module WebAdministration
-
-          Stop-WebSite -Name "${{ vars.IIS_DEV_ACTIVE_SITE }}"     -ErrorAction SilentlyContinue
-          Stop-WebSite -Name "${{ vars.IIS_DEV_ACTIVE_SITE }}-API" -ErrorAction SilentlyContinue
-
-          $activeBE  = "${{ vars.IIS_DEV_ACTIVE_BACKEND_PATH }}"
-          $stagingBE = "${{ vars.IIS_DEV_STAGING_BACKEND_PATH }}"
-          $activeFE  = "${{ vars.IIS_DEV_ACTIVE_FRONTEND_PATH }}"
-          $stagingFE = "${{ vars.IIS_DEV_STAGING_FRONTEND_PATH }}"
-
-          $tempBE = "$activeBE`_temp"
-          Rename-Item $activeBE  $tempBE
-          Rename-Item $stagingBE $activeBE
-          Rename-Item $tempBE    $stagingBE
-
-          $tempFE = "$activeFE`_temp"
-          Rename-Item $activeFE  $tempFE
-          Rename-Item $stagingFE $activeFE
-          Rename-Item $tempFE    $stagingFE
-
-          Start-WebSite -Name "${{ vars.IIS_DEV_ACTIVE_SITE }}-API"
-          Start-WebSite -Name "${{ vars.IIS_DEV_ACTIVE_SITE }}"
-
-          Write-Host "Slot swap tamamlandi. Yeni versiyon aktif."
+          $scriptPath = Join-Path $env:GITHUB_WORKSPACE "scripts\slot-swap.ps1"
+          & $scriptPath `
+            -ActiveSite          "${{ vars.IIS_DEV_ACTIVE_SITE }}" `
+            -StagingSite         "${{ vars.IIS_DEV_STAGING_SITE }}" `
+            -ActiveBackendPath   "${{ vars.IIS_DEV_ACTIVE_BACKEND_PATH }}" `
+            -StagingBackendPath  "${{ vars.IIS_DEV_STAGING_BACKEND_PATH }}" `
+            -ActiveFrontendPath  "${{ vars.IIS_DEV_ACTIVE_FRONTEND_PATH }}" `
+            -StagingFrontendPath "${{ vars.IIS_DEV_STAGING_FRONTEND_PATH }}"
         shell: powershell
 
       # 11. Temizlik
