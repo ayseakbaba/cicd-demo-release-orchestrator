@@ -27,7 +27,55 @@ jobs:
     runs-on: self-hosted
 
     steps:
-      # 1. Backend commit'lerinden issue key'leri topla
+      # 1. Onceki tag'i bul
+      - name: Önceki tag'i bul
+        id: prev-tag
+        env:
+          RELEASE_PAT: ${{ secrets.RELEASE_PAT }}
+        run: |
+          $headers = @{
+            Authorization = "Bearer $env:RELEASE_PAT"
+            Accept        = "application/vnd.github+json"
+          }
+
+          $currentTag = "${{ inputs.tag }}"
+
+          # Orchestrator reposundaki tum release taglerini al
+          $tagsUrl  = "https://api.github.com/repos/${{ github.repository }}/git/refs/tags"
+          try {
+            $response = Invoke-RestMethod -Uri $tagsUrl -Headers $headers -Method GET
+          } catch {
+            $response = @()
+          }
+
+          $tagPattern = "^refs/tags/release/v(\d+)\.(\d+)(?:\.(\d+))?$"
+          $releaseTags = @(
+            $response | Where-Object { $_.ref -match $tagPattern } |
+            ForEach-Object {
+              $null = $_.ref -match $tagPattern
+              [PSCustomObject]@{
+                Ref   = $_.ref -replace "refs/tags/", ""
+                Major = [int]$Matches[1]
+                Minor = [int]$Matches[2]
+                Patch = if ($Matches[3]) { [int]$Matches[3] } else { 0 }
+              }
+            } | Sort-Object Major, Minor, Patch
+          )
+
+          $currentIndex = [array]::IndexOf(($releaseTags | Select-Object -ExpandProperty Ref), $currentTag)
+          
+          if ($currentIndex -gt 0) {
+            $prevTag = $releaseTags[$currentIndex - 1].Ref
+          } else {
+            $prevTag = ""
+          }
+
+          Write-Host "Mevcut tag : $currentTag"
+          Write-Host "Onceki tag : $prevTag"
+          echo "PREV_TAG=$prevTag" >> $env:GITHUB_OUTPUT
+        shell: powershell
+
+      # 2. Backend commit'lerinden issue key'leri topla
       - name: Issue key'leri topla (backend)
         id: backend-keys
         env:
@@ -38,15 +86,34 @@ jobs:
             Accept        = "application/vnd.github+json"
           }
 
-          $commitsUrl = "https://api.github.com/repos/${{ vars.BACKEND_REPO }}/commits?sha=${{ inputs.tag }}&per_page=50"
-          $commits    = Invoke-RestMethod -Uri $commitsUrl -Headers $headers
+          $currentTag = "${{ inputs.tag }}"
+          $prevTag    = "${{ steps.prev-tag.outputs.PREV_TAG }}"
+          $pattern    = "${{ vars.JIRA_PROJECT_KEY }}-\d+"
+          $keys       = @()
+          $commits    = @()
 
-          $pattern = "${{ vars.JIRA_PROJECT_KEY }}-\d+"
-          $keys    = @()
+          if ($prevTag -ne "") {
+            # Iki tag arasindaki commitler
+            $compareUrl = "https://api.github.com/repos/${{ vars.BACKEND_REPO }}/compare/$prevTag...$currentTag"
+            try {
+              $result  = Invoke-RestMethod -Uri $compareUrl -Headers $headers
+              $commits = $result.commits
+              Write-Host "Backend: $prevTag...$currentTag arasinda $($commits.Count) commit bulundu"
+            } catch {
+              Write-Warning "Compare basarisiz, tum commitler alinıyor: $_"
+              $commitsUrl = "https://api.github.com/repos/${{ vars.BACKEND_REPO }}/commits?sha=$currentTag&per_page=50"
+              $commits    = Invoke-RestMethod -Uri $commitsUrl -Headers $headers
+            }
+          } else {
+            # Ilk release, tum commitleri al
+            $commitsUrl = "https://api.github.com/repos/${{ vars.BACKEND_REPO }}/commits?sha=$currentTag&per_page=50"
+            $commits    = Invoke-RestMethod -Uri $commitsUrl -Headers $headers
+            Write-Host "Backend: Ilk release, tum commitler aliniyor"
+          }
 
           foreach ($commit in $commits) {
-            $msg         = $commit.commit.message
-            $foundKeys   = [regex]::Matches($msg, $pattern)
+            $msg       = $commit.commit.message
+            $foundKeys = [regex]::Matches($msg, $pattern)
             foreach ($m in $foundKeys) {
               if ($keys -notcontains $m.Value) {
                 $keys += $m.Value
@@ -59,7 +126,7 @@ jobs:
           echo "BACKEND_KEYS=$keyList" >> $env:GITHUB_OUTPUT
         shell: powershell
 
-      # 2. Frontend commit'lerinden issue key'leri topla
+      # 3. Frontend commit'lerinden issue key'leri topla
       - name: Issue key'leri topla (frontend)
         id: frontend-keys
         env:
@@ -70,15 +137,32 @@ jobs:
             Accept        = "application/vnd.github+json"
           }
 
-          $commitsUrl = "https://api.github.com/repos/${{ vars.FRONTEND_REPO }}/commits?sha=${{ inputs.tag }}&per_page=50"
-          $commits    = Invoke-RestMethod -Uri $commitsUrl -Headers $headers
+          $currentTag = "${{ inputs.tag }}"
+          $prevTag    = "${{ steps.prev-tag.outputs.PREV_TAG }}"
+          $pattern    = "${{ vars.JIRA_PROJECT_KEY }}-\d+"
+          $keys       = @()
+          $commits    = @()
 
-          $pattern = "${{ vars.JIRA_PROJECT_KEY }}-\d+"
-          $keys    = @()
+          if ($prevTag -ne "") {
+            $compareUrl = "https://api.github.com/repos/${{ vars.FRONTEND_REPO }}/compare/$prevTag...$currentTag"
+            try {
+              $result  = Invoke-RestMethod -Uri $compareUrl -Headers $headers
+              $commits = $result.commits
+              Write-Host "Frontend: $prevTag...$currentTag arasinda $($commits.Count) commit bulundu"
+            } catch {
+              Write-Warning "Compare basarisiz, tum commitler aliniyor: $_"
+              $commitsUrl = "https://api.github.com/repos/${{ vars.FRONTEND_REPO }}/commits?sha=$currentTag&per_page=50"
+              $commits    = Invoke-RestMethod -Uri $commitsUrl -Headers $headers
+            }
+          } else {
+            $commitsUrl = "https://api.github.com/repos/${{ vars.FRONTEND_REPO }}/commits?sha=$currentTag&per_page=50"
+            $commits    = Invoke-RestMethod -Uri $commitsUrl -Headers $headers
+            Write-Host "Frontend: Ilk release, tum commitler aliniyor"
+          }
 
           foreach ($commit in $commits) {
-            $msg         = $commit.commit.message
-            $foundKeys   = [regex]::Matches($msg, $pattern)
+            $msg       = $commit.commit.message
+            $foundKeys = [regex]::Matches($msg, $pattern)
             foreach ($m in $foundKeys) {
               if ($keys -notcontains $m.Value) {
                 $keys += $m.Value
@@ -91,7 +175,7 @@ jobs:
           echo "FRONTEND_KEYS=$keyList" >> $env:GITHUB_OUTPUT
         shell: powershell
 
-      # 3. Key listelerini birlestir
+      # 4. Key listelerini birlestir
       - name: Key listelerini birleştir
         id: merge-keys
         run: |
@@ -100,7 +184,7 @@ jobs:
           $allKeys      = ($backendKeys + $frontendKeys) | Sort-Object -Unique
 
           if ($allKeys.Count -eq 0) {
-            Write-Warning "Hicbir Jira issue key bulunamadi. Commit mesajlarinda '${{ vars.JIRA_PROJECT_KEY }}-XXXX' formati arandi."
+            Write-Warning "Hicbir Jira issue key bulunamadi."
             echo "ALL_KEYS=" >> $env:GITHUB_OUTPUT
             exit 0
           }
@@ -110,7 +194,7 @@ jobs:
           echo "ALL_KEYS=$keyList" >> $env:GITHUB_OUTPUT
         shell: powershell
 
-      # 4. Jira durum gecisi
+      # 5. Jira durum gecisi
       - name: Jira durum geçişi yap
         run: |
           if ("${{ steps.merge-keys.outputs.ALL_KEYS }}" -eq "") {
@@ -148,13 +232,11 @@ jobs:
               # Buyuk/kucuk harf ve Turkce karakter duyarsiz eslesme
               $transition = $transResp.transitions | Where-Object {
                 $_.name.ToUpper() -eq $targetStatus.ToUpper() -or
-                $_.name -replace "I","i" -replace "İ","i" -replace "ı","i" `
-                  -eq ($targetStatus -replace "I","i" -replace "İ","i" -replace "ı","i")
+                ($_.name -replace "[İIıi]","i") -eq ($targetStatus -replace "[İIıi]","i")
               } | Select-Object -First 1
 
               if (-not $transition) {
-                Write-Warning "$key icin '$targetStatus' transition bulunamadi."
-                $failed += $key
+                Write-Warning "$key icin '$targetStatus' transition bulunamadi. Issue zaten bu durumda olabilir."
                 continue
               }
 
@@ -178,7 +260,7 @@ jobs:
           }
         shell: powershell
 
-      # 5. Yorum ekle
+      # 6. Yorum ekle
       - name: Jira issue'larına yorum ekle
         if: inputs.comment != ''
         run: |
@@ -230,17 +312,17 @@ jobs:
           }
         shell: powershell
 
-      # 6. Teams bildirimi (emoji yerine metin etiketi)
+      # 7. Teams bildirimi
       - name: Teams bildirimi
         run: |
           $transitionTo = "${{ inputs.transition_to }}"
           $statusLabel  = ""
 
-          if ($transitionTo -eq "WAITING QA")           { $statusLabel = "[QA Bekleniyor]" }
-          elseif ($transitionTo -eq "WAITING TEST DEPLOY")  { $statusLabel = "[Test Deploy Bekleniyor]" }
-          elseif ($transitionTo -eq "WAITING ACCEPTANCE")   { $statusLabel = "[Acceptance Bekleniyor]" }
-          elseif ($transitionTo -eq "DONE")                 { $statusLabel = "[Tamamlandi]" }
-          else                                              { $statusLabel = "[Bilgi]" }
+          if ($transitionTo -eq "WAITING QA")              { $statusLabel = "[QA Bekleniyor]" }
+          elseif ($transitionTo -eq "WAITING TEST DEPLOY") { $statusLabel = "[Test Deploy Bekleniyor]" }
+          elseif ($transitionTo -eq "WAITING ACCEPTANCE")  { $statusLabel = "[Acceptance Bekleniyor]" }
+          elseif ($transitionTo -eq "DONE")                { $statusLabel = "[Tamamlandi]" }
+          else                                             { $statusLabel = "[Bilgi]" }
 
           $keys = "${{ steps.merge-keys.outputs.ALL_KEYS }}"
           $tag  = "${{ inputs.tag }}"
