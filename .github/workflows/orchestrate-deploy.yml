@@ -185,6 +185,14 @@ jobs:
           Import-Module WebAdministration
           Stop-WebSite -Name "${{ vars.IIS_DEV_STAGING_SITE }}"     -ErrorAction SilentlyContinue
           Stop-WebSite -Name "${{ vars.IIS_DEV_STAGING_SITE }}-API" -ErrorAction SilentlyContinue
+
+          # Uygulama havuzlarini durdur
+          Stop-WebAppPool -Name "${{ vars.IIS_DEV_STAGING_SITE }}"     -ErrorAction SilentlyContinue
+          Stop-WebAppPool -Name "${{ vars.IIS_DEV_STAGING_SITE }}-API" -ErrorAction SilentlyContinue
+
+          # Havuzlarin durmasini bekle
+          Start-Sleep -Seconds 3
+          
           Write-Host "Bekleme slotu durduruldu."
         shell: powershell
 
@@ -236,8 +244,13 @@ jobs:
       - name: IIS bekleme slotu baslat
         run: |
           Import-Module WebAdministration
+          # Uygulama havuzlarini baslat
+          Start-WebAppPool -Name "${{ vars.IIS_DEV_STAGING_SITE }}-API"
+          Start-WebAppPool -Name "${{ vars.IIS_DEV_STAGING_SITE }}"
+          
           Start-WebSite -Name "${{ vars.IIS_DEV_STAGING_SITE }}-API"
           Start-WebSite -Name "${{ vars.IIS_DEV_STAGING_SITE }}"
+          
           Write-Host "Bekleme slotu baslatildi."
         shell: powershell
 
