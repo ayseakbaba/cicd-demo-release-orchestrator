@@ -203,9 +203,11 @@ jobs:
 
       # 5. Jira durum gecisi
       - name: Jira durum geçişi yap
+        id: jira-transition
         run: |
           if ("${{ steps.merge-keys.outputs.ALL_KEYS }}" -eq "") {
             Write-Warning "Issue key bulunamadigi icin Jira gecisi atlanıyor."
+            echo "TRANSITION_OK=true" >> $env:GITHUB_OUTPUT
             exit 0
           }
 
@@ -225,6 +227,16 @@ jobs:
           $baseUrl      = "${{ secrets.JIRA_BASE_URL }}"
           $failed       = @()
 
+          # Turkce/Ingilizce karakter farklarini normalize eden yardimci fonksiyon
+          function Normalize-Name([string]$s) {
+            if ($null -eq $s) { return "" }
+            return ($s.Trim().ToUpper() -replace "[İIı]", "I" -replace "[Şş]", "S" `
+                    -replace "[Ğğ]", "G" -replace "[Üü]", "U" -replace "[Öö]", "O" `
+                    -replace "[Çç]", "C")
+          }
+
+          $targetNorm = Normalize-Name $targetStatus
+
           foreach ($key in $keys) {
             $key = $key.Trim()
             if ($key -eq "") { continue }
@@ -234,16 +246,25 @@ jobs:
               $transUrl  = "$baseUrl/rest/api/3/issue/$key/transitions"
               $transResp = Invoke-RestMethod -Uri $transUrl -Headers $headers
 
-              Write-Host "Mevcut transition'lar: $($transResp.transitions.name -join ', ')"
+              # Hata ayiklama: her transition'in adi ve hedef status'u
+              $transResp.transitions | ForEach-Object {
+                Write-Host ("Transition: '{0}' -> Status: '{1}'" -f $_.name, $_.to.name)
+              }
 
-              # Buyuk/kucuk harf ve Turkce karakter duyarsiz eslesme
+              # Once HEDEF STATUS adina (to.name), bulunamazsa transition adina gore esles
               $transition = $transResp.transitions | Where-Object {
-                $_.name.ToUpper() -eq $targetStatus.ToUpper() -or
-                ($_.name -replace "[İIıi]","i") -eq ($targetStatus -replace "[İIıi]","i")
+                (Normalize-Name $_.to.name) -eq $targetNorm
               } | Select-Object -First 1
 
               if (-not $transition) {
-                Write-Warning "$key icin '$targetStatus' transition bulunamadi. Issue zaten bu durumda olabilir."
+                $transition = $transResp.transitions | Where-Object {
+                  (Normalize-Name $_.name) -eq $targetNorm
+                } | Select-Object -First 1
+              }
+
+              if (-not $transition) {
+                Write-Warning "$key icin '$targetStatus' transition/status bulunamadi. Issue zaten bu durumda olabilir."
+                $failed += $key
                 continue
               }
 
@@ -254,7 +275,7 @@ jobs:
                 -Headers $headers `
                 -Body   $body | Out-Null
 
-              Write-Host "$key gecisi yapildi: $($transition.name)"
+              Write-Host "$key gecisi yapildi: $($transition.name) -> $($transition.to.name)"
 
             } catch {
               Write-Warning "$key icin gecis basarisiz: $_"
@@ -264,12 +285,16 @@ jobs:
 
           if ($failed.Count -gt 0) {
             Write-Warning "Gecis yapilamayan issue'lar: $($failed -join ', ')"
+            echo "TRANSITION_OK=false" >> $env:GITHUB_OUTPUT
+            echo "FAILED_KEYS=$($failed -join ',')" >> $env:GITHUB_OUTPUT
+          } else {
+            echo "TRANSITION_OK=true" >> $env:GITHUB_OUTPUT
           }
         shell: powershell
 
-      # 6. Yorum ekle
+      # 6. Yorum ekle (yalnizca gecis basariliysa)
       - name: Jira issue'larına yorum ekle
-        if: inputs.comment != ''
+        if: inputs.comment != '' && steps.jira-transition.outputs.TRANSITION_OK == 'true'
         run: |
           if ("${{ steps.merge-keys.outputs.ALL_KEYS }}" -eq "") { exit 0 }
 
@@ -321,11 +346,17 @@ jobs:
 
       # 7. Teams bildirimi
       - name: Teams bildirimi
+        if: always()
         run: |
           $transitionTo = "${{ inputs.transition_to }}"
+          $transitionOk = "${{ steps.jira-transition.outputs.TRANSITION_OK }}"
+          $failedKeys   = "${{ steps.jira-transition.outputs.FAILED_KEYS }}"
           $statusLabel  = ""
 
-          if ($transitionTo -eq "WAITING QA")              { $statusLabel = "[QA Bekleniyor]" }
+          if ($transitionOk -ne "true") {
+            $statusLabel = "[HATA - Gecis Basarisiz]"
+          }
+          elseif ($transitionTo -eq "WAITING QA")          { $statusLabel = "[QA Bekleniyor]" }
           elseif ($transitionTo -eq "WAITING TEST DEPLOY") { $statusLabel = "[Test Deploy Bekleniyor]" }
           elseif ($transitionTo -eq "WAITING ACCEPTANCE")  { $statusLabel = "[Acceptance Bekleniyor]" }
           elseif ($transitionTo -eq "DONE")                { $statusLabel = "[Tamamlandi]" }
@@ -334,6 +365,17 @@ jobs:
           $keys = "${{ steps.merge-keys.outputs.ALL_KEYS }}"
           $tag  = "${{ inputs.tag }}"
 
+          $cardBody = @(
+            @{ type = "TextBlock"; text = "$statusLabel Jira Durum Guncellendi"; weight = "Bolder"; size = "Medium" }
+            @{ type = "TextBlock"; text = "Tag       : $tag" }
+            @{ type = "TextBlock"; text = "Yeni durum: $transitionTo" }
+            @{ type = "TextBlock"; text = "Issue'lar : $keys" }
+          )
+
+          if ($transitionOk -ne "true" -and $failedKeys -ne "") {
+            $cardBody += @{ type = "TextBlock"; text = "Basarisiz : $failedKeys"; color = "Attention" }
+          }
+
           $body = @{
             type        = "message"
             attachments = @(@{
@@ -341,12 +383,7 @@ jobs:
               content     = @{
                 type    = "AdaptiveCard"
                 version = "1.4"
-                body    = @(
-                  @{ type = "TextBlock"; text = "$statusLabel Jira Durum Guncellendi"; weight = "Bolder"; size = "Medium" }
-                  @{ type = "TextBlock"; text = "Tag       : $tag" }
-                  @{ type = "TextBlock"; text = "Yeni durum: $transitionTo" }
-                  @{ type = "TextBlock"; text = "Issue'lar : $keys" }
-                )
+                body    = $cardBody
               }
             })
           } | ConvertTo-Json -Depth 10
