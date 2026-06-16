@@ -1,4 +1,7 @@
-﻿## release/v1.7.1 -- 2026-06-16 21:28
+﻿## release/v1.7.2 -- 2026-06-16 21:29
+- [cicd-demo-backend-project] CCD-5: Status code rename (56edf28)
+
+## release/v1.7.1 -- 2026-06-16 21:28
 - [cicd-demo-backend-project] CCD-3: health controller güncellendi. (3a4940a)
 
 ## release/v1.7.1 -- 2026-06-16 20:40
@@ -27,6 +30,7 @@
 
 ## release/v1.7.1 -- 2026-06-16 16:47
 - [cicd-demo-backend-project] CCD-3: health controller güncellendi. (3a4940a)
+
 
 
 
