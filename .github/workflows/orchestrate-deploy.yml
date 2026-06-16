@@ -183,16 +183,19 @@ jobs:
       - name: IIS bekleme slotu durdur
         run: |
           Import-Module WebAdministration
-          Stop-WebSite -Name "${{ vars.IIS_DEV_STAGING_SITE }}"     -ErrorAction SilentlyContinue
-          Stop-WebSite -Name "${{ vars.IIS_DEV_STAGING_SITE }}-API" -ErrorAction SilentlyContinue
-
-          # Uygulama havuzlarini durdur
-          Stop-WebAppPool -Name "${{ vars.IIS_DEV_STAGING_SITE }}"     -ErrorAction SilentlyContinue
-          Stop-WebAppPool -Name "${{ vars.IIS_DEV_STAGING_SITE }}-API" -ErrorAction SilentlyContinue
-
-          # Havuzlarin durmasini bekle
-          Start-Sleep -Seconds 3
+          $site    = "${{ vars.IIS_DEV_STAGING_SITE }}"
+          $apiSite = "${{ vars.IIS_DEV_STAGING_SITE }}-API"
           
+          $pool    = (Get-Website -Name $site).applicationPool
+          $apiPool = (Get-Website -Name $apiSite).applicationPool
+          
+          Stop-WebSite -Name $site     -ErrorAction SilentlyContinue
+          Stop-WebSite -Name $apiSite  -ErrorAction SilentlyContinue
+          
+          Stop-WebAppPool -Name $pool    -ErrorAction SilentlyContinue
+          Stop-WebAppPool -Name $apiPool -ErrorAction SilentlyContinue
+          
+          Start-Sleep -Seconds 3
           Write-Host "Bekleme slotu durduruldu."
         shell: powershell
 
@@ -244,12 +247,17 @@ jobs:
       - name: IIS bekleme slotu baslat
         run: |
           Import-Module WebAdministration
-          # Uygulama havuzlarini baslat
-          Start-WebAppPool -Name "${{ vars.IIS_DEV_STAGING_SITE }}-API"
-          Start-WebAppPool -Name "${{ vars.IIS_DEV_STAGING_SITE }}"
+          $site    = "${{ vars.IIS_DEV_STAGING_SITE }}"
+          $apiSite = "${{ vars.IIS_DEV_STAGING_SITE }}-API"
           
-          Start-WebSite -Name "${{ vars.IIS_DEV_STAGING_SITE }}-API"
-          Start-WebSite -Name "${{ vars.IIS_DEV_STAGING_SITE }}"
+          $pool    = (Get-Website -Name $site).applicationPool
+          $apiPool = (Get-Website -Name $apiSite).applicationPool
+          
+          Start-WebAppPool -Name $apiPool
+          Start-WebAppPool -Name $pool
+          
+          Start-WebSite -Name $apiSite
+          Start-WebSite -Name $site
           
           Write-Host "Bekleme slotu baslatildi."
         shell: powershell
