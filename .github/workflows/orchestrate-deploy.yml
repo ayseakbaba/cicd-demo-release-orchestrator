@@ -21,7 +21,7 @@ on:
         options:
           - success
           - failure
-          - promote   # hotfix: etkilenmeyen repo icin onceki artifact kullanilacak
+          - promote
       release_type:
         description: "Release tipi"
         required: true
@@ -39,41 +39,45 @@ jobs:
     runs-on: self-hosted
 
     outputs:
-      ready:         ${{ steps.check.outputs.READY }}
-      backend_status: ${{ steps.check.outputs.BACKEND_STATUS }}
+      ready:           ${{ steps.check.outputs.READY }}
+      backend_status:  ${{ steps.check.outputs.BACKEND_STATUS }}
       frontend_status: ${{ steps.check.outputs.FRONTEND_STATUS }}
-      has_failure:   ${{ steps.check.outputs.HAS_FAILURE }}
+      has_failure:     ${{ steps.check.outputs.HAS_FAILURE }}
 
     steps:
-      # 1. Gelen sonucu GitHub Actions cache'e kaydet
+      # 1. Gelen sonucu ortak klasore kaydet
       - name: Build sonucunu kaydet
         run: |
-          $tag         = "${{ inputs.tag }}" -replace "/", "_"
-          $repo        = "${{ inputs.repo }}"
-          $status      = "${{ inputs.status }}"
-          $cacheDir    = "$env:RUNNER_TEMP\release-state\$tag"
+          $tag      = "${{ inputs.tag }}" -replace "/", "-" -replace "\.", "-"
+          $repo     = "${{ inputs.repo }}"
+          $status   = "${{ inputs.status }}"
+          $stateDir = "C:\actions-runner\release-state\$tag"
 
-          if (!(Test-Path $cacheDir)) {
-            New-Item -ItemType Directory -Path $cacheDir | Out-Null
+          if (!(Test-Path $stateDir)) {
+            New-Item -ItemType Directory -Path $stateDir -Force | Out-Null
           }
 
-          # repo bazinda sonucu dosyaya yaz
-          $status | Out-File -FilePath "$cacheDir\$repo.txt" -Encoding utf8
+          $status | Out-File -FilePath "$stateDir\$repo.txt" -Encoding utf8 -Force
           Write-Host "$repo sonucu kaydedildi: $status"
+          Write-Host "Klasor: $stateDir"
         shell: powershell
 
       # 2. Her iki repo sonucu geldiyse gate'i ac
       - name: Gate kontrolü
         id: check
         run: |
-          $tag      = "${{ inputs.tag }}" -replace "/", "_"
-          $cacheDir = "$env:RUNNER_TEMP\release-state\$tag"
+          $tag      = "${{ inputs.tag }}" -replace "/", "-" -replace "\.", "-"
+          $stateDir = "C:\actions-runner\release-state\$tag"
 
-          $backendFile  = "$cacheDir\backend.txt"
-          $frontendFile = "$cacheDir\frontend.txt"
+          $backendFile  = "$stateDir\backend.txt"
+          $frontendFile = "$stateDir\frontend.txt"
 
           $backendReady  = Test-Path $backendFile
           $frontendReady = Test-Path $frontendFile
+
+          Write-Host "State klasoru : $stateDir"
+          Write-Host "Backend hazir : $backendReady"
+          Write-Host "Frontend hazir: $frontendReady"
 
           if ($backendReady -and $frontendReady) {
             $backendStatus  = (Get-Content $backendFile).Trim()
@@ -84,14 +88,12 @@ jobs:
 
             $hasFailure = ($backendStatus -eq "failure" -or $frontendStatus -eq "failure")
 
-            echo "READY=true"            >> $env:GITHUB_OUTPUT
-            echo "BACKEND_STATUS=$backendStatus"   >> $env:GITHUB_OUTPUT
-            echo "FRONTEND_STATUS=$frontendStatus" >> $env:GITHUB_OUTPUT
-            echo "HAS_FAILURE=$($hasFailure.ToString().ToLower())" >> $env:GITHUB_OUTPUT
+            echo "READY=true"                                              >> $env:GITHUB_OUTPUT
+            echo "BACKEND_STATUS=$backendStatus"                          >> $env:GITHUB_OUTPUT
+            echo "FRONTEND_STATUS=$frontendStatus"                        >> $env:GITHUB_OUTPUT
+            echo "HAS_FAILURE=$($hasFailure.ToString().ToLower())"        >> $env:GITHUB_OUTPUT
           } else {
             Write-Host "Henuz her iki repo sonucu bekleniyor..."
-            Write-Host "Backend hazir  : $backendReady"
-            Write-Host "Frontend hazir : $frontendReady"
             echo "READY=false" >> $env:GITHUB_OUTPUT
           }
         shell: powershell
@@ -106,12 +108,12 @@ jobs:
     if: needs.gate.outputs.ready == 'true' && needs.gate.outputs.has_failure == 'true'
 
     steps:
-      - name: State dosyalarını temizle
+      - name: State dosyalarini temizle
         run: |
-          $tag      = "${{ inputs.tag }}" -replace "/", "_"
-          $cacheDir = "$env:RUNNER_TEMP\release-state\$tag"
-          if (Test-Path $cacheDir) {
-            Remove-Item -Recurse -Force $cacheDir
+          $tag      = "${{ inputs.tag }}" -replace "/", "-" -replace "\.", "-"
+          $stateDir = "C:\actions-runner\release-state\$tag"
+          if (Test-Path $stateDir) {
+            Remove-Item -Recurse -Force $stateDir
           }
         shell: powershell
 
@@ -134,10 +136,10 @@ jobs:
                 type    = "AdaptiveCard"
                 version = "1.4"
                 body    = @(
-                  @{ type = "TextBlock"; text = "❌ Build Başarısız"; weight = "Bolder"; size = "Medium" }
+                  @{ type = "TextBlock"; text = "Build Basarisiz"; weight = "Bolder"; size = "Medium" }
                   @{ type = "TextBlock"; text = "Tag: $tag" }
-                  @{ type = "TextBlock"; text = "Başarısız: $failedList" }
-                  @{ type = "TextBlock"; text = "Jira üzerinden 'Retry Release' butonu ile yeniden tetikleyebilirsiniz." }
+                  @{ type = "TextBlock"; text = "Basarisiz: $failedList" }
+                  @{ type = "TextBlock"; text = "Jira uzerinden Retry Release butonu ile yeniden tetikleyebilirsiniz." }
                 )
               }
             })
@@ -160,39 +162,47 @@ jobs:
     if: needs.gate.outputs.ready == 'true' && needs.gate.outputs.has_failure == 'false'
 
     steps:
-      # 1. Backend artifact'ini indir
+      # 1. Artifact ismi icin tag sanitize
+      - name: Tag sanitize
+        id: sanitize
+        run: |
+          $safetag = "${{ inputs.tag }}" -replace "/", "-"
+          echo "SAFE_TAG=$safetag" >> $env:GITHUB_OUTPUT
+        shell: powershell
+
+      # 2. Backend artifact'ini indir
       - name: Backend artifact indir
         uses: actions/download-artifact@v4
         with:
-          name: backend-${{ inputs.tag }}
+          name: backend-${{ steps.sanitize.outputs.SAFE_TAG }}
           path: ${{ runner.temp }}\artifacts\backend
           github-token: ${{ secrets.RELEASE_PAT }}
           repository: ${{ vars.BACKEND_REPO }}
 
-      # 2. Frontend artifact'ini indir
+      # 3. Frontend artifact'ini indir
       - name: Frontend artifact indir
         uses: actions/download-artifact@v4
         with:
-          name: frontend-${{ inputs.tag }}
+          name: frontend-${{ steps.sanitize.outputs.SAFE_TAG }}
           path: ${{ runner.temp }}\artifacts\frontend
           github-token: ${{ secrets.RELEASE_PAT }}
           repository: ${{ vars.FRONTEND_REPO }}
 
-      # 3. IIS bekleme slotunu durdur
+      # 4. IIS bekleme slotunu durdur
       - name: IIS bekleme slotu durdur
         run: |
           Import-Module WebAdministration
-          Stop-WebSite -Name "${{ vars.IIS_DEV_STAGING_SITE }}"
-          Write-Host "Bekleme slotu durduruldu: ${{ vars.IIS_DEV_STAGING_SITE }}"
+          Stop-WebSite -Name "${{ vars.IIS_DEV_STAGING_SITE }}"    -ErrorAction SilentlyContinue
+          Stop-WebSite -Name "${{ vars.IIS_DEV_STAGING_SITE }}-API" -ErrorAction SilentlyContinue
+          Write-Host "Bekleme slotu durduruldu."
         shell: powershell
 
-      # 4. Backend deploy (bekleme slotuna)
-      - name: Backend deploy → bekleme slotu
+      # 5. Backend deploy
+      - name: Backend deploy
         run: |
           $src  = "${{ runner.temp }}\artifacts\backend"
           $dest = "${{ vars.IIS_DEV_STAGING_BACKEND_PATH }}"
 
-          # Mevcut dosyaları temizle
           if (Test-Path $dest) {
             Remove-Item "$dest\*" -Recurse -Force
           }
@@ -201,8 +211,8 @@ jobs:
           Write-Host "Backend bekleme slotuna deploy edildi."
         shell: powershell
 
-      # 5. Frontend deploy (bekleme slotuna)
-      - name: Frontend deploy → bekleme slotu
+      # 6. Frontend deploy
+      - name: Frontend deploy
         run: |
           $src  = "${{ runner.temp }}\artifacts\frontend"
           $dest = "${{ vars.IIS_DEV_STAGING_FRONTEND_PATH }}"
@@ -215,15 +225,16 @@ jobs:
           Write-Host "Frontend bekleme slotuna deploy edildi."
         shell: powershell
 
-      # 6. IIS bekleme slotunu baslat
+      # 7. IIS bekleme slotunu baslat
       - name: IIS bekleme slotu baslat
         run: |
           Import-Module WebAdministration
+          Start-WebSite -Name "${{ vars.IIS_DEV_STAGING_SITE }}-API"
           Start-WebSite -Name "${{ vars.IIS_DEV_STAGING_SITE }}"
           Write-Host "Bekleme slotu baslatildi."
         shell: powershell
 
-      # 7. Health check (3 kez dene, 15sn arayla)
+      # 8. Health check
       - name: Health check
         id: healthcheck
         run: |
@@ -256,21 +267,21 @@ jobs:
           echo "HEALTH=ok" >> $env:GITHUB_OUTPUT
         shell: powershell
 
-      # 8. Health check basarisizsa rollback
+      # 9. Rollback
       - name: Rollback (health check basarisiz)
         if: failure() && steps.healthcheck.outputs.HEALTH == 'failed'
         run: |
           Import-Module WebAdministration
-          Stop-WebSite -Name "${{ vars.IIS_DEV_STAGING_SITE }}"
+          Stop-WebSite -Name "${{ vars.IIS_DEV_STAGING_SITE }}"     -ErrorAction SilentlyContinue
+          Stop-WebSite -Name "${{ vars.IIS_DEV_STAGING_SITE }}-API"  -ErrorAction SilentlyContinue
 
-          # Bekleme slotu dosyalarini temizle
           Remove-Item "${{ vars.IIS_DEV_STAGING_BACKEND_PATH }}\*"  -Recurse -Force -ErrorAction SilentlyContinue
           Remove-Item "${{ vars.IIS_DEV_STAGING_FRONTEND_PATH }}\*" -Recurse -Force -ErrorAction SilentlyContinue
 
           Write-Host "Rollback tamamlandi. Aktif slot etkilenmedi."
         shell: powershell
 
-      # 9. Rollback sonrasi Teams bildirimi
+      # 10. Rollback Teams bildirimi
       - name: Teams bildirimi (rollback)
         if: failure()
         run: |
@@ -282,9 +293,9 @@ jobs:
                 type    = "AdaptiveCard"
                 version = "1.4"
                 body    = @(
-                  @{ type = "TextBlock"; text = "⚠️ Health Check Başarısız — Rollback Yapıldı"; weight = "Bolder"; size = "Medium" }
+                  @{ type = "TextBlock"; text = "Health Check Basarisiz - Rollback Yapildi"; weight = "Bolder"; size = "Medium" }
                   @{ type = "TextBlock"; text = "Tag: ${{ inputs.tag }}" }
-                  @{ type = "TextBlock"; text = "Aktif slot etkilenmedi. Jira üzerinden 'Retry Release' ile yeniden deneyebilirsiniz." }
+                  @{ type = "TextBlock"; text = "Aktif slot etkilenmedi. Jira uzerinden Retry Release ile yeniden deneyebilirsiniz." }
                 )
               }
             })
@@ -297,55 +308,73 @@ jobs:
             -ContentType "application/json"
         shell: powershell
 
-      # 10. Slot swap (health check OK)
-      - name: Slot swap → Dev aktif
+      # 11. Slot swap
+      - name: Slot swap - Dev aktif
         run: |
           Import-Module WebAdministration
 
-          # Aktif slotu durdur
-          Stop-WebSite -Name "${{ vars.IIS_DEV_ACTIVE_SITE }}"
+          Stop-WebSite -Name "${{ vars.IIS_DEV_ACTIVE_SITE }}"     -ErrorAction SilentlyContinue
+          Stop-WebSite -Name "${{ vars.IIS_DEV_ACTIVE_SITE }}-API"  -ErrorAction SilentlyContinue
 
-          # Bekleme → Aktif olarak yeniden adlandir (path swap)
-          $activeBE   = "${{ vars.IIS_DEV_ACTIVE_BACKEND_PATH }}"
-          $stagingBE  = "${{ vars.IIS_DEV_STAGING_BACKEND_PATH }}"
-          $activeFE   = "${{ vars.IIS_DEV_ACTIVE_FRONTEND_PATH }}"
-          $stagingFE  = "${{ vars.IIS_DEV_STAGING_FRONTEND_PATH }}"
-          $tempBE     = "$activeBE`_temp"
-          $tempFE     = "$activeFE`_temp"
+          $activeBE  = "${{ vars.IIS_DEV_ACTIVE_BACKEND_PATH }}"
+          $stagingBE = "${{ vars.IIS_DEV_STAGING_BACKEND_PATH }}"
+          $activeFE  = "${{ vars.IIS_DEV_ACTIVE_FRONTEND_PATH }}"
+          $stagingFE = "${{ vars.IIS_DEV_STAGING_FRONTEND_PATH }}"
 
-          # Backend swap
+          $tempBE = "$activeBE`_temp"
           Rename-Item $activeBE  $tempBE
           Rename-Item $stagingBE $activeBE
           Rename-Item $tempBE    $stagingBE
 
-          # Frontend swap
+          $tempFE = "$activeFE`_temp"
           Rename-Item $activeFE  $tempFE
           Rename-Item $stagingFE $activeFE
           Rename-Item $tempFE    $stagingFE
 
-          # Aktif slotu baslat
+          Start-WebSite -Name "${{ vars.IIS_DEV_ACTIVE_SITE }}-API"
           Start-WebSite -Name "${{ vars.IIS_DEV_ACTIVE_SITE }}"
+
           Write-Host "Slot swap tamamlandi. Yeni versiyon aktif."
         shell: powershell
 
-      # 11. State dosyalarini temizle
+      # 12. State dosyalarini temizle
       - name: State dosyalarini temizle
         if: always()
         run: |
-          $tag      = "${{ inputs.tag }}" -replace "/", "_"
-          $cacheDir = "$env:RUNNER_TEMP\release-state\$tag"
-          if (Test-Path $cacheDir) {
-            Remove-Item -Recurse -Force $cacheDir
+          $tag      = "${{ inputs.tag }}" -replace "/", "-" -replace "\.", "-"
+          $stateDir = "C:\actions-runner\release-state\$tag"
+          if (Test-Path $stateDir) {
+            Remove-Item -Recurse -Force $stateDir
           }
         shell: powershell
 
-      # 12. Jira ve Teams bildirimi (basari)
-      - name: Jira Waiting QA + Teams bildirimi
+      # 13. Jira WAITING QA + Teams bildirimi
+      - name: Jira WAITING QA + Teams bildirimi
         run: |
           $tag = "${{ inputs.tag }}"
 
-          # Teams bildirimi
+          # Jira gecisi
           $body = @{
+            ref    = "main"
+            inputs = @{
+              tag           = $tag
+              transition_to = "WAITING QA"
+              comment       = "Dev deploy tamamlandi. Slot swap basarili. QA incelemesi bekleniyor."
+            }
+          } | ConvertTo-Json
+
+          Invoke-RestMethod `
+            -Uri "https://api.github.com/repos/${{ github.repository }}/actions/workflows/orchestrate-jira.yml/dispatches" `
+            -Method POST `
+            -Headers @{
+              Authorization = "Bearer ${{ secrets.RELEASE_PAT }}"
+              Accept        = "application/vnd.github+json"
+            } `
+            -Body $body `
+            -ContentType "application/json"
+
+          # Teams bildirimi
+          $teamsBody = @{
             type        = "message"
             attachments = @(@{
               contentType = "application/vnd.microsoft.card.adaptive"
@@ -353,9 +382,9 @@ jobs:
                 type    = "AdaptiveCard"
                 version = "1.4"
                 body    = @(
-                  @{ type = "TextBlock"; text = "✅ Dev Deploy Tamamlandı"; weight = "Bolder"; size = "Medium" }
+                  @{ type = "TextBlock"; text = "Dev Deploy Tamamlandi"; weight = "Bolder"; size = "Medium" }
                   @{ type = "TextBlock"; text = "Tag: $tag" }
-                  @{ type = "TextBlock"; text = "Slot swap basarili. Jira'da ilgili isler Waiting QA durumuna alindi." }
+                  @{ type = "TextBlock"; text = "Slot swap basarili. Jira'da ilgili isler WAITING QA durumuna alindi." }
                 )
               }
             })
@@ -364,12 +393,6 @@ jobs:
           Invoke-RestMethod `
             -Uri "${{ secrets.TEAMS_WEBHOOK_URL }}" `
             -Method POST `
-            -Body $body `
+            -Body $teamsBody `
             -ContentType "application/json"
-
-          # Jira durum gecisi: Waiting QA
-          # Not: Jira issue key'leri commit mesajlarindan toplanip
-          # Jira REST API uzerinden transition yapilacak.
-          # Bu adim orchestrate-jira.yml'de ayri yonetilecek.
-          Write-Host "Jira gecisi orchestrate-jira workflow'u tarafindan yapilacak."
         shell: powershell
