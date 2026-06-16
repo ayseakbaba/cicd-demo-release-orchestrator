@@ -32,7 +32,7 @@ function Swap-FolderContents {
         [string]$PathA,
         [string]$PathB
     )
-    $tempPath = "$PathA`_swaptmp"
+    $tempPath = "${PathA}_swaptmp"
     Write-Host "Swap: $PathA <-> $PathB"
     # A'yi gecici yere tasi
     New-Item -ItemType Directory -Path $tempPath -Force | Out-Null
