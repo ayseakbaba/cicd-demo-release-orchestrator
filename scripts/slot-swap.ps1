@@ -16,6 +16,10 @@ Write-Host "Aktif slot durduruluyor..."
 Stop-WebSite -Name "$ActiveSite-API" -ErrorAction SilentlyContinue
 Stop-WebSite -Name $ActiveSite       -ErrorAction SilentlyContinue
 
+# Uygulama havuzlarini durdur
+Stop-WebAppPool -Name "${{ vars.IIS_DEV_STAGING_SITE }}"     -ErrorAction SilentlyContinue
+Stop-WebAppPool -Name "${{ vars.IIS_DEV_STAGING_SITE }}-API" -ErrorAction SilentlyContinue
+
 function Swap-FolderContents {
     param(
         [string]$PathA,
@@ -49,6 +53,10 @@ Swap-FolderContents -PathA $ActiveBackendPath -PathB $StagingBackendPath
 Swap-FolderContents -PathA $ActiveFrontendPath -PathB $StagingFrontendPath
 
 Write-Host "Aktif slot baslatiliyor..."
+# Uygulama havuzlarini baslat
+Start-WebAppPool -Name "${{ vars.IIS_DEV_STAGING_SITE }}-API"
+Start-WebAppPool -Name "${{ vars.IIS_DEV_STAGING_SITE }}"
+
 Start-WebSite -Name "$ActiveSite-API"
 Start-WebSite -Name $ActiveSite
 
