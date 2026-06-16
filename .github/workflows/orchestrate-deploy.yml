@@ -45,7 +45,6 @@ jobs:
       has_failure:     ${{ steps.check.outputs.HAS_FAILURE }}
 
     steps:
-      # 1. Gelen sonucu ortak klasore kaydet
       - name: Build sonucunu kaydet
         run: |
           $tag      = "${{ inputs.tag }}" -replace "/", "-" -replace "\.", "-"
@@ -62,7 +61,6 @@ jobs:
           Write-Host "Klasor: $stateDir"
         shell: powershell
 
-      # 2. Her iki repo sonucu geldiyse gate'i ac
       - name: Gate kontrolü
         id: check
         run: |
@@ -88,10 +86,10 @@ jobs:
 
             $hasFailure = ($backendStatus -eq "failure" -or $frontendStatus -eq "failure")
 
-            echo "READY=true"                                              >> $env:GITHUB_OUTPUT
-            echo "BACKEND_STATUS=$backendStatus"                          >> $env:GITHUB_OUTPUT
-            echo "FRONTEND_STATUS=$frontendStatus"                        >> $env:GITHUB_OUTPUT
-            echo "HAS_FAILURE=$($hasFailure.ToString().ToLower())"        >> $env:GITHUB_OUTPUT
+            echo "READY=true"                                        >> $env:GITHUB_OUTPUT
+            echo "BACKEND_STATUS=$backendStatus"                    >> $env:GITHUB_OUTPUT
+            echo "FRONTEND_STATUS=$frontendStatus"                  >> $env:GITHUB_OUTPUT
+            echo "HAS_FAILURE=$($hasFailure.ToString().ToLower())"  >> $env:GITHUB_OUTPUT
           } else {
             Write-Host "Henuz her iki repo sonucu bekleniyor..."
             echo "READY=false" >> $env:GITHUB_OUTPUT
@@ -117,7 +115,7 @@ jobs:
           }
         shell: powershell
 
-      - name: Teams bildirimi gonder (hata)
+      - name: Teams bildirimi (hata)
         run: |
           $backendStatus  = "${{ needs.gate.outputs.backend_status }}"
           $frontendStatus = "${{ needs.gate.outputs.frontend_status }}"
@@ -168,9 +166,8 @@ jobs:
         with:
           token: ${{ secrets.RELEASE_PAT }}
 
-      # 2. Artifact'leri indir (GitHub API uzerinden)
+      # 2. Artifact'leri kalici klasore indir
       - name: Artifact'leri indir
-        id: download
         env:
           RELEASE_PAT: ${{ secrets.RELEASE_PAT }}
         run: |
@@ -179,23 +176,31 @@ jobs:
             -Tag          "${{ inputs.tag }}" `
             -BackendRepo  "${{ vars.BACKEND_REPO }}" `
             -FrontendRepo "${{ vars.FRONTEND_REPO }}" `
-            -OutputPath   "${{ runner.temp }}\artifacts"
+            -OutputPath   "C:\actions-runner\artifacts"
         shell: powershell
 
-      # 4. IIS bekleme slotunu durdur
+      # 3. IIS bekleme slotunu durdur
       - name: IIS bekleme slotu durdur
         run: |
           Import-Module WebAdministration
-          Stop-WebSite -Name "${{ vars.IIS_DEV_STAGING_SITE }}"    -ErrorAction SilentlyContinue
+          Stop-WebSite -Name "${{ vars.IIS_DEV_STAGING_SITE }}"     -ErrorAction SilentlyContinue
           Stop-WebSite -Name "${{ vars.IIS_DEV_STAGING_SITE }}-API" -ErrorAction SilentlyContinue
           Write-Host "Bekleme slotu durduruldu."
         shell: powershell
 
-      # 5. Backend deploy
+      # 4. Backend deploy
       - name: Backend deploy
         run: |
-          $src  = "${{ runner.temp }}\artifacts\backend\backend-$(('${{ inputs.tag }}' -replace '/', '-'))"
-          $dest = "${{ vars.IIS_DEV_STAGING_BACKEND_PATH }}"
+          $safeTag = "${{ inputs.tag }}" -replace "/", "-"
+          $src     = "C:\actions-runner\artifacts\backend\backend-$safeTag"
+          $dest    = "${{ vars.IIS_DEV_STAGING_BACKEND_PATH }}"
+
+          Write-Host "Kaynak : $src"
+          Write-Host "Hedef  : $dest"
+
+          if (!(Test-Path $src)) {
+            throw "Artifact klasoru bulunamadi: $src"
+          }
 
           if (Test-Path $dest) {
             Remove-Item "$dest\*" -Recurse -Force
@@ -205,11 +210,19 @@ jobs:
           Write-Host "Backend bekleme slotuna deploy edildi."
         shell: powershell
 
-      # 6. Frontend deploy
+      # 5. Frontend deploy
       - name: Frontend deploy
         run: |
-          $src  = "${{ runner.temp }}\artifacts\frontend\frontend-$(('${{ inputs.tag }}' -replace '/', '-'))"
-          $dest = "${{ vars.IIS_DEV_STAGING_FRONTEND_PATH }}"
+          $safeTag = "${{ inputs.tag }}" -replace "/", "-"
+          $src     = "C:\actions-runner\artifacts\frontend\frontend-$safeTag"
+          $dest    = "${{ vars.IIS_DEV_STAGING_FRONTEND_PATH }}"
+
+          Write-Host "Kaynak : $src"
+          Write-Host "Hedef  : $dest"
+
+          if (!(Test-Path $src)) {
+            throw "Artifact klasoru bulunamadi: $src"
+          }
 
           if (Test-Path $dest) {
             Remove-Item "$dest\*" -Recurse -Force
@@ -219,7 +232,7 @@ jobs:
           Write-Host "Frontend bekleme slotuna deploy edildi."
         shell: powershell
 
-      # 7. IIS bekleme slotunu baslat
+      # 6. IIS bekleme slotunu baslat
       - name: IIS bekleme slotu baslat
         run: |
           Import-Module WebAdministration
@@ -228,7 +241,7 @@ jobs:
           Write-Host "Bekleme slotu baslatildi."
         shell: powershell
 
-      # 8. Health check
+      # 7. Health check
       - name: Health check
         id: healthcheck
         run: |
@@ -261,13 +274,13 @@ jobs:
           echo "HEALTH=ok" >> $env:GITHUB_OUTPUT
         shell: powershell
 
-      # 9. Rollback
+      # 8. Rollback
       - name: Rollback (health check basarisiz)
         if: failure() && steps.healthcheck.outputs.HEALTH == 'failed'
         run: |
           Import-Module WebAdministration
           Stop-WebSite -Name "${{ vars.IIS_DEV_STAGING_SITE }}"     -ErrorAction SilentlyContinue
-          Stop-WebSite -Name "${{ vars.IIS_DEV_STAGING_SITE }}-API"  -ErrorAction SilentlyContinue
+          Stop-WebSite -Name "${{ vars.IIS_DEV_STAGING_SITE }}-API" -ErrorAction SilentlyContinue
 
           Remove-Item "${{ vars.IIS_DEV_STAGING_BACKEND_PATH }}\*"  -Recurse -Force -ErrorAction SilentlyContinue
           Remove-Item "${{ vars.IIS_DEV_STAGING_FRONTEND_PATH }}\*" -Recurse -Force -ErrorAction SilentlyContinue
@@ -275,7 +288,7 @@ jobs:
           Write-Host "Rollback tamamlandi. Aktif slot etkilenmedi."
         shell: powershell
 
-      # 10. Rollback Teams bildirimi
+      # 9. Rollback Teams bildirimi
       - name: Teams bildirimi (rollback)
         if: failure()
         run: |
@@ -302,13 +315,13 @@ jobs:
             -ContentType "application/json"
         shell: powershell
 
-      # 11. Slot swap
+      # 10. Slot swap
       - name: Slot swap - Dev aktif
         run: |
           Import-Module WebAdministration
 
           Stop-WebSite -Name "${{ vars.IIS_DEV_ACTIVE_SITE }}"     -ErrorAction SilentlyContinue
-          Stop-WebSite -Name "${{ vars.IIS_DEV_ACTIVE_SITE }}-API"  -ErrorAction SilentlyContinue
+          Stop-WebSite -Name "${{ vars.IIS_DEV_ACTIVE_SITE }}-API" -ErrorAction SilentlyContinue
 
           $activeBE  = "${{ vars.IIS_DEV_ACTIVE_BACKEND_PATH }}"
           $stagingBE = "${{ vars.IIS_DEV_STAGING_BACKEND_PATH }}"
@@ -331,18 +344,31 @@ jobs:
           Write-Host "Slot swap tamamlandi. Yeni versiyon aktif."
         shell: powershell
 
-      # 12. State dosyalarini temizle
-      - name: State dosyalarini temizle
+      # 11. Temizlik
+      - name: Temizlik
         if: always()
         run: |
           $tag      = "${{ inputs.tag }}" -replace "/", "-" -replace "\.", "-"
+          $safeTag  = "${{ inputs.tag }}" -replace "/", "-"
           $stateDir = "C:\actions-runner\release-state\$tag"
+
+          # State dosyalarini temizle
           if (Test-Path $stateDir) {
             Remove-Item -Recurse -Force $stateDir
+            Write-Host "State temizlendi."
           }
+
+          # Artifact dosyalarini temizle
+          $backendArt  = "C:\actions-runner\artifacts\backend\backend-$safeTag"
+          $frontendArt = "C:\actions-runner\artifacts\frontend\frontend-$safeTag"
+
+          if (Test-Path $backendArt)  { Remove-Item -Recurse -Force $backendArt }
+          if (Test-Path $frontendArt) { Remove-Item -Recurse -Force $frontendArt }
+
+          Write-Host "Artifact temizlendi."
         shell: powershell
 
-      # 13. Jira WAITING QA + Teams bildirimi
+      # 12. Jira WAITING QA + Teams bildirimi
       - name: Jira WAITING QA + Teams bildirimi
         run: |
           $tag = "${{ inputs.tag }}"
@@ -378,7 +404,7 @@ jobs:
                 body    = @(
                   @{ type = "TextBlock"; text = "Dev Deploy Tamamlandi"; weight = "Bolder"; size = "Medium" }
                   @{ type = "TextBlock"; text = "Tag: $tag" }
-                  @{ type = "TextBlock"; text = "Slot swap basarili. Jira'da ilgili isler WAITING QA durumuna alindi." }
+                  @{ type = "TextBlock"; text = "Slot swap basarili. Jira isleri WAITING QA durumuna alindi." }
                 )
               }
             })
