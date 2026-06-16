@@ -162,31 +162,25 @@ jobs:
     if: needs.gate.outputs.ready == 'true' && needs.gate.outputs.has_failure == 'false'
 
     steps:
-      # 1. Artifact ismi icin tag sanitize
-      - name: Tag sanitize
-        id: sanitize
+      # 1. Orchestrator checkout (download script icin)
+      - name: Checkout orchestrator
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.RELEASE_PAT }}
+
+      # 2. Artifact'leri indir (GitHub API uzerinden)
+      - name: Artifact'leri indir
+        id: download
+        env:
+          RELEASE_PAT: ${{ secrets.RELEASE_PAT }}
         run: |
-          $safetag = "${{ inputs.tag }}" -replace "/", "-"
-          echo "SAFE_TAG=$safetag" >> $env:GITHUB_OUTPUT
+          $scriptPath = Join-Path $env:GITHUB_WORKSPACE "scripts\download-artifacts.ps1"
+          & $scriptPath `
+            -Tag          "${{ inputs.tag }}" `
+            -BackendRepo  "${{ vars.BACKEND_REPO }}" `
+            -FrontendRepo "${{ vars.FRONTEND_REPO }}" `
+            -OutputPath   "${{ runner.temp }}\artifacts"
         shell: powershell
-
-      # 2. Backend artifact'ini indir
-      - name: Backend artifact indir
-        uses: actions/download-artifact@v4
-        with:
-          name: backend-${{ steps.sanitize.outputs.SAFE_TAG }}
-          path: ${{ runner.temp }}\artifacts\backend
-          github-token: ${{ secrets.RELEASE_PAT }}
-          repository: ${{ vars.BACKEND_REPO }}
-
-      # 3. Frontend artifact'ini indir
-      - name: Frontend artifact indir
-        uses: actions/download-artifact@v4
-        with:
-          name: frontend-${{ steps.sanitize.outputs.SAFE_TAG }}
-          path: ${{ runner.temp }}\artifacts\frontend
-          github-token: ${{ secrets.RELEASE_PAT }}
-          repository: ${{ vars.FRONTEND_REPO }}
 
       # 4. IIS bekleme slotunu durdur
       - name: IIS bekleme slotu durdur
@@ -200,7 +194,7 @@ jobs:
       # 5. Backend deploy
       - name: Backend deploy
         run: |
-          $src  = "${{ runner.temp }}\artifacts\backend"
+          $src  = "${{ runner.temp }}\artifacts\backend\backend-$(('${{ inputs.tag }}' -replace '/', '-'))"
           $dest = "${{ vars.IIS_DEV_STAGING_BACKEND_PATH }}"
 
           if (Test-Path $dest) {
@@ -214,7 +208,7 @@ jobs:
       # 6. Frontend deploy
       - name: Frontend deploy
         run: |
-          $src  = "${{ runner.temp }}\artifacts\frontend"
+          $src  = "${{ runner.temp }}\artifacts\frontend\frontend-$(('${{ inputs.tag }}' -replace '/', '-'))"
           $dest = "${{ vars.IIS_DEV_STAGING_FRONTEND_PATH }}"
 
           if (Test-Path $dest) {
