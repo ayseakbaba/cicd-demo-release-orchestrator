@@ -237,7 +237,7 @@ jobs:
                 type    = "AdaptiveCard"
                 version = "1.4"
                 body    = @(
-                  @{ type = "TextBlock"; text = "⚠️ Test Health Check Başarısız — Rollback Yapıldı"; weight = "Bolder"; size = "Medium" }
+                  @{ type = "TextBlock"; text = "Test Health Check Başarısız — Rollback Yapıldı"; weight = "Bolder"; size = "Medium" }
                   @{ type = "TextBlock"; text = "Tag: ${{ inputs.tag }}" }
                   @{ type = "TextBlock"; text = "Test aktif slotu etkilenmedi. Jira üzerinden retry yapabilirsiniz." }
                 )
@@ -315,7 +315,7 @@ jobs:
                 type    = "AdaptiveCard"
                 version = "1.4"
                 body    = @(
-                  @{ type = "TextBlock"; text = "✅ Test Deploy Tamamlandı"; weight = "Bolder"; size = "Medium" }
+                  @{ type = "TextBlock"; text = "Test Deploy Tamamlandı"; weight = "Bolder"; size = "Medium" }
                   @{ type = "TextBlock"; text = "Tag: ${{ inputs.tag }}" }
                   @{ type = "TextBlock"; text = "Slot swap basarili. Test ortami aktif." }
                   @{ type = "TextBlock"; text = "Jira'da ilgili isler WAITING ACCEPTANCE durumuna alindi." }
