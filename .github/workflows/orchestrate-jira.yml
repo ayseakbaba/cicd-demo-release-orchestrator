@@ -40,8 +40,8 @@ jobs:
 
           $currentTag = "${{ inputs.tag }}"
 
-          # Orchestrator reposundaki tum release taglerini al
-          $tagsUrl  = "https://api.github.com/repos/${{ github.repository }}/git/refs/tags"
+          # Backend reposundaki tum release taglerini al
+          $tagsUrl  = "https://api.github.com/repos/${{ vars.BACKEND_REPO }}/git/refs/tags"
           try {
             $response = Invoke-RestMethod -Uri $tagsUrl -Headers $headers -Method GET
           } catch {
@@ -62,8 +62,15 @@ jobs:
             } | Sort-Object Major, Minor, Patch
           )
 
-          $currentIndex = [array]::IndexOf(($releaseTags | Select-Object -ExpandProperty Ref), $currentTag)
-          
+          $tagRefs = @($releaseTags | Select-Object -ExpandProperty Ref)
+          $currentIndex = -1
+          for ($i = 0; $i -lt $tagRefs.Count; $i++) {
+            if ($tagRefs[$i] -eq $currentTag) {
+              $currentIndex = $i
+              break
+            }
+          }
+
           if ($currentIndex -gt 0) {
             $prevTag = $releaseTags[$currentIndex - 1].Ref
           } else {
