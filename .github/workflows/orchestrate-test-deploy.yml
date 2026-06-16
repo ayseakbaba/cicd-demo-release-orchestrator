@@ -136,10 +136,19 @@ jobs:
       - name: IIS test bekleme slotu durdur
         run: |
           Import-Module WebAdministration
-          Stop-WebSite    -Name "${{ vars.IIS_TEST_STAGING_SITE }}"     -ErrorAction SilentlyContinue
-          Stop-WebSite    -Name "${{ vars.IIS_TEST_STAGING_SITE }}-API" -ErrorAction SilentlyContinue
-          Stop-WebAppPool -Name "${{ vars.IIS_TEST_STAGING_SITE }}"     -ErrorAction SilentlyContinue
-          Stop-WebAppPool -Name "${{ vars.IIS_TEST_STAGING_SITE }}-API" -ErrorAction SilentlyContinue
+          
+          $site    = "${{ vars.IIS_TEST_STAGING_SITE }}"
+          $apiSite = "${{ vars.IIS_TEST_STAGING_SITE }}-API"
+          
+          $pool    = (Get-Website -Name $site).applicationPool
+          $apiPool = (Get-Website -Name $apiSite).applicationPool
+          
+          Stop-WebSite    -Name $site    -ErrorAction SilentlyContinue
+          Stop-WebSite    -Name $apiSite -ErrorAction SilentlyContinue
+          
+          Stop-WebAppPool -Name $pool    -ErrorAction SilentlyContinue
+          Stop-WebAppPool -Name $apiPool -ErrorAction SilentlyContinue
+          
           Start-Sleep -Seconds 3
           Write-Host "Test bekleme slotu durduruldu."
         shell: powershell
@@ -182,10 +191,16 @@ jobs:
       - name: IIS test bekleme slotu baslat
         run: |
           Import-Module WebAdministration
-          Start-WebAppPool -Name "${{ vars.IIS_TEST_STAGING_SITE }}-API" -ErrorAction SilentlyContinue
-          Start-WebAppPool -Name "${{ vars.IIS_TEST_STAGING_SITE }}"     -ErrorAction SilentlyContinue
-          Start-WebSite    -Name "${{ vars.IIS_TEST_STAGING_SITE }}-API"
-          Start-WebSite    -Name "${{ vars.IIS_TEST_STAGING_SITE }}"
+          $site    = "${{ vars.IIS_TEST_STAGING_SITE }}"
+          $apiSite = "${{ vars.IIS_TEST_STAGING_SITE }}-API"
+          
+          $pool    = (Get-Website -Name $site).applicationPool
+          $apiPool = (Get-Website -Name $apiSite).applicationPool
+          
+          Start-WebAppPool -Name $apiPool -ErrorAction SilentlyContinue
+          Start-WebAppPool -Name $pool    -ErrorAction SilentlyContinue
+          Start-WebSite    -Name $apiSite
+          Start-WebSite    -Name $site
           Write-Host "Test bekleme slotu baslatildi."
         shell: powershell
 
