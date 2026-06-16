@@ -116,6 +116,7 @@ jobs:
           git config user.name  "GitHub Actions"
           git add CHANGELOG.md
           git commit -m "chore: changelog guncellendi ($tag)"
+          git pull --rebase origin main
           git push
         shell: powershell
 
